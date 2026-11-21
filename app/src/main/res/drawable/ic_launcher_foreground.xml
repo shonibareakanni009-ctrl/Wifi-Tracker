@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Soft background circle -->
+    <path
+        android:fillColor="#0D9488"
+        android:pathData="M54,20c-18.8,0 -34,15.2 -34,34s15.2,34 34,34 34,-15.2 34,-34 -15.2,-34 -34,-34z" />
+
+    <!-- WiFi arcs -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,68m-4,0a4,4 0,1 1,8 0a4,4 0,1 1,-8 0" />
+
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round"
+        android:pathData="M42,58c6.5,-6.5 17.5,-6.5 24,0" />
+
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round"
+        android:pathData="M35,50c11,-11 27,-11 38,0" />
+
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round"
+        android:pathData="M28,42c15,-15 37,-15 52,0" />
+
+    <!-- Small data bars under the WiFi to suggest tracking -->
+    <path
+        android:fillColor="#5EEAD4"
+        android:pathData="M40,78h4v8h-4z" />
+    <path
+        android:fillColor="#5EEAD4"
+        android:pathData="M48,74h4v12h-4z" />
+    <path
+        android:fillColor="#5EEAD4"
+        android:pathData="M56,70h4v16h-4z" />
+    <path
+        android:fillColor="#5EEAD4"
+        android:pathData="M64,76h4v10h-4z" />
+</vector>

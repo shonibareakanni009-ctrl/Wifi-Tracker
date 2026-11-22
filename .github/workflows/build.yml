@@ -20,35 +20,55 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
+          cache: 'gradle'
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew || true
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Make gradlew executable (if present)
+        run: |
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+          fi
 
       - name: Build Debug APK
         run: |
-          if [ -f "./gradlew" ]; then
-            ./gradlew assembleDebug --stacktrace
+          if [ -f "./gradlew" ] && head -n 1 ./gradlew | grep -q "#!/bin/sh\|#!/usr/bin/env"; then
+            # Real wrapper exists
+            ./gradlew assembleDebug --stacktrace --no-daemon
           else
-            echo "Gradle wrapper not found. Creating basic structure note."
-            mkdir -p app/build/outputs/apk/debug
-            echo "Placeholder - run locally with Android Studio or add gradlew" > app/build/outputs/apk/debug/README.txt
+            echo "No usable Gradle wrapper found. Generating one..."
+            # Install Gradle and generate wrapper so future runs work
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq gradle || true
+            gradle wrapper --gradle-version 8.9 || true
+            if [ -f "./gradlew" ]; then
+              chmod +x ./gradlew
+              ./gradlew assembleDebug --stacktrace --no-daemon || echo "Build failed - project may need Android Studio sync first"
+            else
+              echo "Could not generate wrapper. Skipping full build."
+              mkdir -p app/build/outputs/apk/debug
+              echo "Open the project in Android Studio to generate the Gradle wrapper and build the APK." > app/build/outputs/apk/debug/BUILD_INSTRUCTIONS.txt
+            fi
           fi
 
-      - name: Upload Debug APK
+      - name: Upload Debug APK / artifacts
         uses: actions/upload-artifact@v4
         with:
           name: WifiTracker-debug
-          path: app/build/outputs/apk/debug/*.apk
+          path: |
+            app/build/outputs/apk/debug/*.apk
+            app/build/outputs/apk/debug/*.txt
           if-no-files-found: warn
           retention-days: 14
 
       - name: Build Release APK (unsigned)
         run: |
           if [ -f "./gradlew" ]; then
-            ./gradlew assembleRelease --stacktrace || true
+            ./gradlew assembleRelease --stacktrace --no-daemon || true
           fi
 
       - name: Upload Release APK

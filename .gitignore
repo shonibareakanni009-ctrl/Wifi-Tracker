@@ -1,0 +1,2 @@
+# Local/CI signing keystore; never commit private signing material
+/app/upload-keystore.jks

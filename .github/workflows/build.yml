@@ -18,6 +18,9 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
@@ -30,7 +33,6 @@ jobs:
         run: |
           gradle wrapper --gradle-version 8.7
           chmod +x gradlew
-          ls -la gradlew gradle/wrapper/ || true
 
       - name: Decode keystore (if secrets exist)
         env:

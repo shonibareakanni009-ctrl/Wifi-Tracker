@@ -3,20 +3,36 @@ package com.wifitracker.app.data
 import android.app.usage.NetworkStats
 import android.app.usage.NetworkStatsManager
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.TrafficStats
 import android.net.wifi.WifiManager
+import android.os.Build
 import android.os.RemoteException
+import android.telephony.TelephonyManager
 import java.util.Calendar
 
 enum class UsagePeriod {
     TODAY, WEEK, MONTH
 }
 
-class WifiUsageRepository(private val context: Context? = null) {
+data class AppUsage(
+    val packageName: String,
+    val appName: String,
+    val bytes: Long
+)
 
-    // For preview / non-context use we keep simple fallbacks
+data class NetworkUsage(
+    val ssid: String,
+    val bytes: Long
+)
+
+class WifiUsageRepository(private val context: Context) {
+
+    private val networkStatsManager =
+        context.getSystemService(Context.NETWORK_STATS_SERVICE) as NetworkStatsManager
+
     private var lastRxBytes = TrafficStats.getTotalRxBytes()
     private var lastTxBytes = TrafficStats.getTotalTxBytes()
     private var lastTimestamp = System.currentTimeMillis()
@@ -38,44 +54,118 @@ class WifiUsageRepository(private val context: Context? = null) {
     }
 
     fun getCurrentSsid(): String {
-        // In real app this would use WifiManager. In this skeleton we return a placeholder.
-        // Full implementation requires ACCESS_WIFI_STATE and handling of null SSID.
-        return "Current WiFi"
-    }
-
-    fun getSignalStrength(): Int {
-        return 3 // 0-4 scale placeholder
-    }
-
-    fun getTotalWifiUsage(period: UsagePeriod): Long {
-        // Placeholder values for the skeleton.
-        // Real implementation uses NetworkStatsManager.querySummaryForDevice
-        // with ConnectivityManager.TYPE_WIFI and proper start/end timestamps.
-        return when (period) {
-            UsagePeriod.TODAY -> 1_850_000_000L      // ~1.85 GB example
-            UsagePeriod.WEEK -> 8_420_000_000L       // ~8.4 GB
-            UsagePeriod.MONTH -> 24_600_000_000L     // ~24.6 GB
+        return try {
+            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            val info = wifiManager.connectionInfo
+            val ssid = info?.ssid?.removeSurrounding("\"")
+            if (ssid.isNullOrBlank() || ssid == "<unknown ssid>") {
+                "Not connected"
+            } else {
+                ssid
+            }
+        } catch (e: Exception) {
+            "Not connected"
         }
     }
 
-    fun getPerAppWifiUsage(period: UsagePeriod): List<Pair<String, Long>> {
-        // Placeholder data. Real implementation queries NetworkStatsManager
-        // per UID for TYPE_WIFI in the given time range and resolves package names.
-        return listOf(
-            "YouTube" to 620_000_000L,
-            "Chrome" to 410_000_000L,
-            "Instagram" to 280_000_000L,
-            "WhatsApp" to 190_000_000L,
-            "Netflix" to 150_000_000L,
-            "TikTok" to 130_000_000L,
-            "System" to 95_000_000L,
-            "Google Play" to 70_000_000L
-        )
+    fun getSignalStrength(): Int {
+        return try {
+            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            val rssi = wifiManager.connectionInfo?.rssi ?: -100
+            WifiManager.calculateSignalLevel(rssi, 5) // 0-4
+        } catch (e: Exception) {
+            0
+        }
     }
 
-    // Helper to compute start of day / week / month
-    private fun getStartOfPeriod(period: UsagePeriod): Long {
+    fun isWifiConnected(): Boolean {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val network = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(network) ?: return false
+        return caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+    }
+
+    fun getTotalWifiUsage(period: UsagePeriod): Long {
+        val (start, end) = getTimeRange(period)
+        return try {
+            val bucket = networkStatsManager.querySummaryForDevice(
+                ConnectivityManager.TYPE_WIFI,
+                null,
+                start,
+                end
+            )
+            (bucket?.rxBytes ?: 0L) + (bucket?.txBytes ?: 0L)
+        } catch (e: Exception) {
+            0L
+        }
+    }
+
+    fun getPerAppWifiUsage(period: UsagePeriod): List<AppUsage> {
+        val (start, end) = getTimeRange(period)
+        val result = mutableListOf<AppUsage>()
+        val pm = context.packageManager
+
+        try {
+            val stats = networkStatsManager.querySummary(
+                ConnectivityManager.TYPE_WIFI,
+                null,
+                start,
+                end
+            )
+
+            val uidMap = mutableMapOf<Int, Long>()
+
+            while (stats.hasNextBucket()) {
+                val bucket = NetworkStats.Bucket()
+                stats.getNextBucket(bucket)
+                if (bucket.uid == NetworkStats.Bucket.UID_ALL ||
+                    bucket.uid == NetworkStats.Bucket.UID_REMOVED ||
+                    bucket.uid == NetworkStats.Bucket.UID_TETHERING) continue
+
+                val total = bucket.rxBytes + bucket.txBytes
+                uidMap[bucket.uid] = (uidMap[bucket.uid] ?: 0L) + total
+            }
+            stats.close()
+
+            for ((uid, bytes) in uidMap) {
+                if (bytes < 10_000) continue // skip tiny usage
+                val packages = pm.getPackagesForUid(uid)
+                val packageName = packages?.firstOrNull() ?: continue
+                val appName = try {
+                    val appInfo = pm.getApplicationInfo(packageName, 0)
+                    pm.getApplicationLabel(appInfo).toString()
+                } catch (e: Exception) {
+                    packageName
+                }
+                result.add(AppUsage(packageName, appName, bytes))
+            }
+        } catch (e: Exception) {
+            // Permission or other error
+        }
+
+        return result.sortedByDescending { it.bytes }
+    }
+
+    /**
+     * Per-SSID tracking is limited by Android.
+     * We return the current SSID with today's total as a practical approximation.
+     * Full historical per-SSID requires a persistent service that records
+     * TrafficStats deltas on every SSID change.
+     */
+    fun getPerNetworkUsage(period: UsagePeriod): List<NetworkUsage> {
+        val current = getCurrentSsid()
+        val total = getTotalWifiUsage(period)
+        return if (current != "Not connected" && total > 0) {
+            listOf(NetworkUsage(current, total))
+        } else {
+            emptyList()
+        }
+    }
+
+    private fun getTimeRange(period: UsagePeriod): Pair<Long, Long> {
+        val end = System.currentTimeMillis()
         val cal = Calendar.getInstance()
+
         when (period) {
             UsagePeriod.TODAY -> {
                 cal.set(Calendar.HOUR_OF_DAY, 0)
@@ -98,6 +188,6 @@ class WifiUsageRepository(private val context: Context? = null) {
                 cal.set(Calendar.MILLISECOND, 0)
             }
         }
-        return cal.timeInMillis
+        return Pair(cal.timeInMillis, end)
     }
 }

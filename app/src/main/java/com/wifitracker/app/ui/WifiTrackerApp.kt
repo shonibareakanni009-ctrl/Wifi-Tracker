@@ -10,15 +10,14 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.Modifier.modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import com.wifitracker.app.data.AppUsage
 import com.wifitracker.app.data.UsagePeriod
 import com.wifitracker.app.data.WifiUsageRepository
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -26,18 +25,19 @@ fun WifiTrackerApp(
     hasUsageAccess: Boolean,
     onRequestUsageAccess: () -> Unit
 ) {
-    val repository = remember { WifiUsageRepository() }
+    val context = LocalContext.current
+    val repository = remember { WifiUsageRepository(context) }
+
     var selectedPeriod by remember { mutableStateOf(UsagePeriod.TODAY) }
     var downloadSpeed by remember { mutableStateOf(0L) }
     var uploadSpeed by remember { mutableStateOf(0L) }
     var currentSsid by remember { mutableStateOf("Not connected") }
     var signalStrength by remember { mutableStateOf(0) }
     var totalUsage by remember { mutableStateOf(0L) }
-    var perAppUsage by remember { mutableStateOf<List<Pair<String, Long>>>(emptyList()) }
+    var perAppUsage by remember { mutableStateOf<List<AppUsage>>(emptyList()) }
+    var isRefreshing by remember { mutableStateOf(false) }
 
-    val scope = rememberCoroutineScope()
-
-    // Real-time speed polling
+    // Real-time speed + SSID polling
     LaunchedEffect(Unit) {
         while (true) {
             val speeds = repository.getCurrentSpeeds()
@@ -49,11 +49,13 @@ fun WifiTrackerApp(
         }
     }
 
-    // Load historical data when period changes
+    // Load historical + per-app when period or permission changes
     LaunchedEffect(selectedPeriod, hasUsageAccess) {
         if (hasUsageAccess) {
+            isRefreshing = true
             totalUsage = repository.getTotalWifiUsage(selectedPeriod)
             perAppUsage = repository.getPerAppWifiUsage(selectedPeriod)
+            isRefreshing = false
         }
     }
 
@@ -63,7 +65,19 @@ fun WifiTrackerApp(
                 title = { Text("Wifi Tracker", fontWeight = FontWeight.Bold) },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface
-                )
+                ),
+                actions = {
+                    IconButton(onClick = {
+                        if (hasUsageAccess) {
+                            isRefreshing = true
+                            totalUsage = repository.getTotalWifiUsage(selectedPeriod)
+                            perAppUsage = repository.getPerAppWifiUsage(selectedPeriod)
+                            isRefreshing = false
+                        }
+                    }) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                    }
+                }
             )
         }
     ) { padding ->
@@ -100,25 +114,36 @@ fun WifiTrackerApp(
                 item {
                     TotalUsageCard(
                         period = selectedPeriod,
-                        bytes = totalUsage
+                        bytes = totalUsage,
+                        isLoading = isRefreshing
                     )
                 }
 
                 item {
                     Text(
-                        text = "Top Apps (WiFi)",
+                        text = "Top Apps (WiFi only)",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.padding(top = 8.dp)
                     )
                 }
 
-                items(perAppUsage.take(12)) { (appName, bytes) ->
-                    AppUsageRow(appName = appName, bytes = bytes)
+                if (perAppUsage.isEmpty() && !isRefreshing) {
+                    item {
+                        Text(
+                            text = "No app usage data yet for this period.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(vertical = 12.dp)
+                        )
+                    }
+                } else {
+                    items(perAppUsage.take(15)) { app ->
+                        AppUsageRow(appName = app.appName, bytes = app.bytes)
+                    }
                 }
 
                 item {
-                    Spacer(modifier = Modifier.height(24.dp))
+                    Spacer(modifier = Modifier.height(32.dp))
                 }
             }
         }
@@ -151,7 +176,7 @@ fun PermissionScreen(
         )
         Spacer(modifier = Modifier.height(12.dp))
         Text(
-            text = "To show your past WiFi usage and which apps use the most data, please grant Usage Access permission.",
+            text = "To show past WiFi usage and which apps use the most data, please grant Usage Access permission.\n\nThis is required by Android for any app that reads network statistics.",
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -187,28 +212,27 @@ fun LiveSpeedCard(
                     tint = MaterialTheme.colorScheme.onPrimaryContainer
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = ssid,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                )
+                Column {
+                    Text(
+                        text = ssid,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                    Text(
+                        text = "Signal: ${"●".repeat(signal)}${"○".repeat(4 - signal)}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                    )
+                }
             }
             Spacer(modifier = Modifier.height(16.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
-                SpeedItem(
-                    label = "Download",
-                    speed = downloadSpeed,
-                    icon = Icons.Default.Download
-                )
-                SpeedItem(
-                    label = "Upload",
-                    speed = uploadSpeed,
-                    icon = Icons.Default.Upload
-                )
+                SpeedItem(label = "Download", speed = downloadSpeed, icon = Icons.Default.Download)
+                SpeedItem(label = "Upload", speed = uploadSpeed, icon = Icons.Default.Upload)
             }
         }
     }
@@ -221,11 +245,7 @@ fun SpeedItem(
     icon: androidx.compose.ui.graphics.vector.ImageVector
 ) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onPrimaryContainer
-        )
+        Icon(imageVector = icon, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
         Spacer(modifier = Modifier.height(4.dp))
         Text(
             text = formatSpeed(speed),
@@ -268,7 +288,8 @@ fun PeriodSelector(
 @Composable
 fun TotalUsageCard(
     period: UsagePeriod,
-    bytes: Long
+    bytes: Long,
+    isLoading: Boolean
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -290,12 +311,16 @@ fun TotalUsageCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = formatBytes(bytes),
-                style = MaterialTheme.typography.displaySmall,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
-            )
+            if (isLoading) {
+                CircularProgressIndicator(modifier = Modifier.size(32.dp))
+            } else {
+                Text(
+                    text = formatBytes(bytes),
+                    style = MaterialTheme.typography.displaySmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
         }
     }
 }

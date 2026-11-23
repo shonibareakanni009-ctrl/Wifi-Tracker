@@ -2,6 +2,7 @@ package com.wifitracker.app.widget
 
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.widget.RemoteViews
 import com.wifitracker.app.R
@@ -10,60 +11,79 @@ import com.wifitracker.app.data.WifiUsageRepository
 
 class DailyUsageWidgetReceiver : AppWidgetProvider() {
     override fun onUpdate(context: Context, appWidgetManager: AppWidgetManager, appWidgetIds: IntArray) {
-        val repo = WifiUsageRepository(context)
-        val bytes = try { repo.getTotalWifiUsage(UsagePeriod.TODAY) } catch (e: Exception) { 0L }
-        val value = formatBytes(bytes)
-
-        for (id in appWidgetIds) {
-            val views = RemoteViews(context.packageName, R.layout.widget_usage)
-            views.setTextViewText(R.id.widget_title, "Today")
-            views.setTextViewText(R.id.widget_value, value)
-            appWidgetManager.updateAppWidget(id, views)
-        }
+        updateUsageWidgets(context, appWidgetManager, appWidgetIds, UsagePeriod.TODAY, "Today", goAsync())
     }
 }
 
 class WeeklyUsageWidgetReceiver : AppWidgetProvider() {
     override fun onUpdate(context: Context, appWidgetManager: AppWidgetManager, appWidgetIds: IntArray) {
-        val repo = WifiUsageRepository(context)
-        val bytes = try { repo.getTotalWifiUsage(UsagePeriod.WEEK) } catch (e: Exception) { 0L }
-        val value = formatBytes(bytes)
-
-        for (id in appWidgetIds) {
-            val views = RemoteViews(context.packageName, R.layout.widget_usage)
-            views.setTextViewText(R.id.widget_title, "This Week")
-            views.setTextViewText(R.id.widget_value, value)
-            appWidgetManager.updateAppWidget(id, views)
-        }
+        updateUsageWidgets(context, appWidgetManager, appWidgetIds, UsagePeriod.WEEK, "This Week", goAsync())
     }
 }
 
 class MonthlyUsageWidgetReceiver : AppWidgetProvider() {
     override fun onUpdate(context: Context, appWidgetManager: AppWidgetManager, appWidgetIds: IntArray) {
-        val repo = WifiUsageRepository(context)
-        val bytes = try { repo.getTotalWifiUsage(UsagePeriod.MONTH) } catch (e: Exception) { 0L }
-        val value = formatBytes(bytes)
-
-        for (id in appWidgetIds) {
-            val views = RemoteViews(context.packageName, R.layout.widget_usage)
-            views.setTextViewText(R.id.widget_title, "This Month")
-            views.setTextViewText(R.id.widget_value, value)
-            appWidgetManager.updateAppWidget(id, views)
-        }
+        updateUsageWidgets(context, appWidgetManager, appWidgetIds, UsagePeriod.MONTH, "This Month", goAsync())
     }
+}
+
+private fun updateUsageWidgets(
+    context: Context,
+    appWidgetManager: AppWidgetManager,
+    appWidgetIds: IntArray,
+    period: UsagePeriod,
+    title: String,
+    pendingResult: BroadcastReceiver.PendingResult
+) {
+    Thread({
+        try {
+            val report = WifiUsageRepository(context.applicationContext).getWifiUsageReport(period)
+            val value = if (report.isAvailable) formatBytes(report.totalBytes) else "Unavailable"
+            appWidgetIds.forEach { id ->
+                val views = RemoteViews(context.packageName, R.layout.widget_usage)
+                views.setTextViewText(R.id.widget_title, title)
+                views.setTextViewText(R.id.widget_value, value)
+                appWidgetManager.updateAppWidget(id, views)
+            }
+        } catch (_: Exception) {
+            appWidgetIds.forEach { id ->
+                val views = RemoteViews(context.packageName, R.layout.widget_usage)
+                views.setTextViewText(R.id.widget_title, title)
+                views.setTextViewText(R.id.widget_value, "Unavailable")
+                appWidgetManager.updateAppWidget(id, views)
+            }
+        } finally {
+            pendingResult.finish()
+        }
+    }, "wifi-usage-widget").start()
 }
 
 class LiveSpeedWidgetReceiver : AppWidgetProvider() {
     override fun onUpdate(context: Context, appWidgetManager: AppWidgetManager, appWidgetIds: IntArray) {
-        val repo = WifiUsageRepository(context)
-        val (down, up) = try { repo.getCurrentSpeeds() } catch (e: Exception) { Pair(0L, 0L) }
-        val text = "↓ ${formatSpeed(down)}  ↑ ${formatSpeed(up)}"
-
-        for (id in appWidgetIds) {
-            val views = RemoteViews(context.packageName, R.layout.widget_speed)
-            views.setTextViewText(R.id.widget_speed, text)
-            appWidgetManager.updateAppWidget(id, views)
-        }
+        val pendingResult = goAsync()
+        Thread({
+            try {
+                val sample = WifiUsageRepository(context.applicationContext).getCurrentWifiSpeeds("widget")
+                val text = if (sample.isAvailable) {
+                    "↓ ${formatSpeed(sample.downloadBytesPerSecond)}  ↑ ${formatSpeed(sample.uploadBytesPerSecond)}"
+                } else {
+                    "Wi-Fi speed unavailable"
+                }
+                appWidgetIds.forEach { id ->
+                    val views = RemoteViews(context.packageName, R.layout.widget_speed)
+                    views.setTextViewText(R.id.widget_speed, text)
+                    appWidgetManager.updateAppWidget(id, views)
+                }
+            } catch (_: Exception) {
+                appWidgetIds.forEach { id ->
+                    val views = RemoteViews(context.packageName, R.layout.widget_speed)
+                    views.setTextViewText(R.id.widget_speed, "Wi-Fi speed unavailable")
+                    appWidgetManager.updateAppWidget(id, views)
+                }
+            } finally {
+                pendingResult.finish()
+            }
+        }, "wifi-speed-widget").start()
     }
 }
 

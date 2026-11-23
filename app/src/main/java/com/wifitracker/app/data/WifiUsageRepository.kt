@@ -3,29 +3,37 @@ package com.wifitracker.app.data
 import android.app.usage.NetworkStats
 import android.app.usage.NetworkStatsManager
 import android.content.Context
-import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.TrafficStats
 import android.net.wifi.WifiManager
-import android.os.Build
-import android.os.RemoteException
-import android.telephony.TelephonyManager
 import java.util.Calendar
+
 
 enum class UsagePeriod {
     TODAY, WEEK, MONTH
 }
 
 data class AppUsage(
+    /** A stable row key; shared UIDs may contain more than one package name. */
     val packageName: String,
     val appName: String,
     val bytes: Long
 )
 
-data class NetworkUsage(
-    val ssid: String,
-    val bytes: Long
+data class WifiUsageReport(
+    val totalBytes: Long,
+    val rows: List<AppUsage>,
+    val isAvailable: Boolean,
+    val note: String? = null
+)
+
+data class WifiSpeedSample(
+    val downloadBytesPerSecond: Long,
+    val uploadBytesPerSecond: Long,
+    /** False while sampling, when interface counters are unsupported, or when the sample is stale. */
+    val isAvailable: Boolean,
+    val note: String? = null
 )
 
 class WifiUsageRepository(private val context: Context) {
@@ -33,37 +41,219 @@ class WifiUsageRepository(private val context: Context) {
     private val networkStatsManager =
         context.getSystemService(Context.NETWORK_STATS_SERVICE) as NetworkStatsManager
 
-    private var lastRxBytes = TrafficStats.getTotalRxBytes()
-    private var lastTxBytes = TrafficStats.getTotalTxBytes()
-    private var lastTimestamp = System.currentTimeMillis()
+    /**
+     * Uses Android's device-level Wi-Fi total and per-UID Wi-Fi summary for the same interval.
+     * Every UID with bytes is represented, including system/uninstalled UIDs. If Android's
+     * device and UID totals differ, the gap is placed in a System / unassigned row so the visible
+     * rows always add up exactly to the displayed total.
+     */
+    fun getWifiUsageReport(period: UsagePeriod): WifiUsageReport {
+        val (start, end) = getTimeRange(period)
 
-    fun getCurrentSpeeds(): Pair<Long, Long> {
-        val currentRx = TrafficStats.getTotalRxBytes()
-        val currentTx = TrafficStats.getTotalTxBytes()
+        val deviceTotal = try {
+            val bucket = networkStatsManager.querySummaryForDevice(
+                ConnectivityManager.TYPE_WIFI,
+                null,
+                start,
+                end
+            )
+            bucket?.let { safeAdd(it.rxBytes, it.txBytes) }
+        } catch (_: Exception) {
+            null
+        }
+
+        val stats = try {
+            networkStatsManager.querySummary(
+                ConnectivityManager.TYPE_WIFI,
+                null,
+                start,
+                end
+            )
+        } catch (_: Exception) {
+            return WifiUsageReport(
+                totalBytes = 0L,
+                rows = emptyList(),
+                isAvailable = false,
+                note = "Android could not read Wi-Fi usage. Check Usage Access permission and try again."
+            )
+        } ?: return WifiUsageReport(
+            totalBytes = 0L,
+            rows = emptyList(),
+            isAvailable = false,
+            note = "Android did not provide Wi-Fi usage data for this period."
+        )
+
+        val bytesByUid = mutableMapOf<Int, Long>()
+        try {
+            while (stats.hasNextBucket()) {
+                val bucket = NetworkStats.Bucket()
+                if (!stats.getNextBucket(bucket)) break
+
+                // UID_ALL is an aggregate sentinel; counting it alongside per-UID buckets would
+                // double-count traffic. The device total below accounts for it when available.
+                if (bucket.uid == NetworkStats.Bucket.UID_ALL) continue
+
+                val bytes = safeAdd(bucket.rxBytes, bucket.txBytes)
+                if (bytes > 0L) {
+                    bytesByUid[bucket.uid] = safeAdd(bytesByUid[bucket.uid] ?: 0L, bytes)
+                }
+            }
+        } catch (_: Exception) {
+            return WifiUsageReport(
+                totalBytes = 0L,
+                rows = emptyList(),
+                isAvailable = false,
+                note = "Android returned incomplete Wi-Fi usage data. Refresh and try again."
+            )
+        } finally {
+            stats.close()
+        }
+
+        val uidTotal = bytesByUid.values.fold(0L, ::safeAdd)
+        val total = maxOf(deviceTotal ?: uidTotal, uidTotal)
+        val rows = mutableListOf<AppUsage>()
+
+        for ((uid, bytes) in bytesByUid) {
+            if (uid < 0) {
+                // Removed/tethering/system sentinel UIDs cannot be attributed to a regular app.
+                rows += AppUsage(
+                    packageName = "uid-$uid",
+                    appName = "System traffic (UID $uid)",
+                    bytes = bytes
+                )
+                continue
+            }
+
+            val packages = try {
+                context.packageManager.getPackagesForUid(uid)
+                    ?.distinct()
+                    ?.sorted()
+                    .orEmpty()
+            } catch (_: Exception) {
+                emptyList()
+            }
+
+            when (packages.size) {
+                0 -> rows += AppUsage(
+                    packageName = "uid-$uid",
+                    appName = "Unidentified app/system (UID $uid)",
+                    bytes = bytes
+                )
+                1 -> {
+                    val packageName = packages.single()
+                    rows += AppUsage(
+                        packageName = packageName,
+                        appName = getAppLabel(packageName),
+                        bytes = bytes
+                    )
+                }
+                else -> {
+                    // Android reports usage for a shared UID, not separately for each package.
+                    // Keep it as one combined row rather than assigning all bytes to one app.
+                    val labels = packages.map(::getAppLabel)
+                    rows += AppUsage(
+                        packageName = packages.joinToString(separator = "+"),
+                        appName = "Shared UID: ${labels.joinToString(" + ")}",
+                        bytes = bytes
+                    )
+                }
+            }
+        }
+
+        val unexplainedDeviceBytes = (total - uidTotal).coerceAtLeast(0L)
+        if (unexplainedDeviceBytes > 0L) {
+            rows += AppUsage(
+                packageName = "system-unassigned",
+                appName = "System / unassigned",
+                bytes = unexplainedDeviceBytes
+            )
+        }
+
+        val sortedRows = rows.sortedByDescending { it.bytes }
+        val notes = buildList {
+            if (deviceTotal == null) {
+                add("Device-level total was unavailable; the total is the sum of Android's per-UID Wi-Fi data.")
+            } else if (deviceTotal != uidTotal) {
+                add("Android's device and per-UID totals differ. The larger total is shown, and System / unassigned reconciles any positive gap so all rows add up.")
+            }
+            if (rows.any { it.appName.startsWith("Unidentified app/system") }) {
+                add("Some UID usage could not be matched to an installed app name; those bytes remain visible by UID.")
+            }
+        }
+        val note = notes.takeIf { it.isNotEmpty() }?.joinToString(" ")
+
+        return WifiUsageReport(
+            totalBytes = total,
+            rows = sortedRows,
+            isAvailable = true,
+            note = note
+        )
+    }
+
+    /**
+     * Samples byte counters for the currently connected Wi-Fi interface only (not cellular or
+     * other interfaces). A distinct sample key keeps the screen and widget baselines independent.
+     */
+    fun getCurrentWifiSpeeds(sampleKey: String = "screen"): WifiSpeedSample {
+        val prefs = context.getSharedPreferences("wifi_speed_samples", Context.MODE_PRIVATE)
+        val key = sampleKey.replace(Regex("[^A-Za-z0-9_-]"), "_")
+        val interfaceName = getWifiInterfaceName()
+
+        if (interfaceName == null) {
+            clearSpeedBaseline(prefs, key)
+            return WifiSpeedSample(0L, 0L, isAvailable = true)
+        }
+
+        val rx = TrafficStats.getRxBytes(interfaceName)
+        val tx = TrafficStats.getTxBytes(interfaceName)
+        if (rx < 0L || tx < 0L) {
+            clearSpeedBaseline(prefs, key)
+            return WifiSpeedSample(
+                0L,
+                0L,
+                isAvailable = false,
+                note = "Wi-Fi interface counters are unavailable on this device."
+            )
+        }
+
         val now = System.currentTimeMillis()
-        val elapsedSeconds = ((now - lastTimestamp) / 1000).coerceAtLeast(1)
+        val rxKey = "${key}_rx"
+        val txKey = "${key}_tx"
+        val ifaceKey = "${key}_iface"
+        val timeKey = "${key}_time"
+        val previousRx = prefs.getLong(rxKey, -1L)
+        val previousTx = prefs.getLong(txKey, -1L)
+        val previousInterface = prefs.getString(ifaceKey, null)
+        val previousTime = prefs.getLong(timeKey, 0L)
 
-        val downloadSpeed = ((currentRx - lastRxBytes) / elapsedSeconds).coerceAtLeast(0)
-        val uploadSpeed = ((currentTx - lastTxBytes) / elapsedSeconds).coerceAtLeast(0)
+        prefs.edit()
+            .putLong(rxKey, rx)
+            .putLong(txKey, tx)
+            .putString(ifaceKey, interfaceName)
+            .putLong(timeKey, now)
+            .apply()
 
-        lastRxBytes = currentRx
-        lastTxBytes = currentTx
-        lastTimestamp = now
+        val elapsed = now - previousTime
+        if (previousRx < 0L || previousTx < 0L || previousInterface != interfaceName || elapsed !in 250L..15_000L) {
+            return WifiSpeedSample(
+                0L,
+                0L,
+                isAvailable = false,
+                note = "Sampling Wi-Fi throughput; rates will appear after another reading."
+            )
+        }
 
-        return Pair(downloadSpeed, uploadSpeed)
+        val down = ((rx - previousRx).coerceAtLeast(0L) * 1000L) / elapsed
+        val up = ((tx - previousTx).coerceAtLeast(0L) * 1000L) / elapsed
+        return WifiSpeedSample(down, up, isAvailable = true)
     }
 
     fun getCurrentSsid(): String {
         return try {
             val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            val info = wifiManager.connectionInfo
-            val ssid = info?.ssid?.removeSurrounding("\"")
-            if (ssid.isNullOrBlank() || ssid == "<unknown ssid>") {
-                "Not connected"
-            } else {
-                ssid
-            }
-        } catch (e: Exception) {
+            val ssid = wifiManager.connectionInfo?.ssid?.removeSurrounding("\"")
+            if (ssid.isNullOrBlank() || ssid == "<unknown ssid>") "Not connected" else ssid
+        } catch (_: Exception) {
             "Not connected"
         }
     }
@@ -72,99 +262,61 @@ class WifiUsageRepository(private val context: Context) {
         return try {
             val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
             val rssi = wifiManager.connectionInfo?.rssi ?: -100
-            WifiManager.calculateSignalLevel(rssi, 5) // 0-4
-        } catch (e: Exception) {
+            WifiManager.calculateSignalLevel(rssi, 5).coerceIn(0, 4)
+        } catch (_: Exception) {
             0
         }
     }
 
-    fun isWifiConnected(): Boolean {
-        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val network = cm.activeNetwork ?: return false
-        val caps = cm.getNetworkCapabilities(network) ?: return false
-        return caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
-    }
+    fun isWifiConnected(): Boolean = getWifiInterfaceName() != null
 
-    fun getTotalWifiUsage(period: UsagePeriod): Long {
-        val (start, end) = getTimeRange(period)
+    private fun getWifiInterfaceName(): String? {
         return try {
-            val bucket = networkStatsManager.querySummaryForDevice(
-                ConnectivityManager.TYPE_WIFI,
-                null,
-                start,
-                end
-            )
-            (bucket?.rxBytes ?: 0L) + (bucket?.txBytes ?: 0L)
-        } catch (e: Exception) {
-            0L
-        }
-    }
+            val connectivityManager =
+                context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val networks = (listOfNotNull(connectivityManager.activeNetwork) + connectivityManager.allNetworks)
+                .distinct()
 
-    fun getPerAppWifiUsage(period: UsagePeriod): List<AppUsage> {
-        val (start, end) = getTimeRange(period)
-        val result = mutableListOf<AppUsage>()
-        val pm = context.packageManager
-
-        try {
-            val stats = networkStatsManager.querySummary(
-                ConnectivityManager.TYPE_WIFI,
-                null,
-                start,
-                end
-            )
-
-            val uidMap = mutableMapOf<Int, Long>()
-
-            while (stats.hasNextBucket()) {
-                val bucket = NetworkStats.Bucket()
-                stats.getNextBucket(bucket)
-                if (bucket.uid == NetworkStats.Bucket.UID_ALL ||
-                    bucket.uid == NetworkStats.Bucket.UID_REMOVED ||
-                    bucket.uid == NetworkStats.Bucket.UID_TETHERING) continue
-
-                val total = bucket.rxBytes + bucket.txBytes
-                uidMap[bucket.uid] = (uidMap[bucket.uid] ?: 0L) + total
-            }
-            stats.close()
-
-            for ((uid, bytes) in uidMap) {
-                if (bytes < 10_000) continue // skip tiny usage
-                val packages = pm.getPackagesForUid(uid)
-                val packageName = packages?.firstOrNull() ?: continue
-                val appName = try {
-                    val appInfo = pm.getApplicationInfo(packageName, 0)
-                    pm.getApplicationLabel(appInfo).toString()
-                } catch (e: Exception) {
-                    packageName
+            networks.firstNotNullOfOrNull { network ->
+                val capabilities = connectivityManager.getNetworkCapabilities(network)
+                if (capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) {
+                    connectivityManager.getLinkProperties(network)?.interfaceName
+                } else {
+                    null
                 }
-                result.add(AppUsage(packageName, appName, bytes))
             }
-        } catch (e: Exception) {
-            // Permission or other error
+        } catch (_: Exception) {
+            null
         }
-
-        return result.sortedByDescending { it.bytes }
     }
 
-    /**
-     * Per-SSID tracking is limited by Android.
-     * We return the current SSID with today's total as a practical approximation.
-     * Full historical per-SSID requires a persistent service that records
-     * TrafficStats deltas on every SSID change.
-     */
-    fun getPerNetworkUsage(period: UsagePeriod): List<NetworkUsage> {
-        val current = getCurrentSsid()
-        val total = getTotalWifiUsage(period)
-        return if (current != "Not connected" && total > 0) {
-            listOf(NetworkUsage(current, total))
-        } else {
-            emptyList()
+    private fun getAppLabel(packageName: String): String {
+        return try {
+            val appInfo = context.packageManager.getApplicationInfo(packageName, 0)
+            context.packageManager.getApplicationLabel(appInfo).toString()
+        } catch (_: Exception) {
+            packageName
         }
+    }
+
+    private fun clearSpeedBaseline(prefs: android.content.SharedPreferences, key: String) {
+        prefs.edit()
+            .remove("${key}_rx")
+            .remove("${key}_tx")
+            .remove("${key}_iface")
+            .remove("${key}_time")
+            .apply()
+    }
+
+    private fun safeAdd(first: Long, second: Long): Long {
+        if (first <= 0L) return second.coerceAtLeast(0L)
+        if (second <= 0L) return first
+        return if (Long.MAX_VALUE - first < second) Long.MAX_VALUE else first + second
     }
 
     private fun getTimeRange(period: UsagePeriod): Pair<Long, Long> {
         val end = System.currentTimeMillis()
-        val cal = Calendar.getInstance()
+        val cal = Calendar.getInstance().apply { timeInMillis = end }
 
         when (period) {
             UsagePeriod.TODAY -> {
@@ -188,6 +340,6 @@ class WifiUsageRepository(private val context: Context) {
                 cal.set(Calendar.MILLISECOND, 0)
             }
         }
-        return Pair(cal.timeInMillis, end)
+        return cal.timeInMillis to end
     }
 }

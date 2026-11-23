@@ -12,14 +12,18 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import com.wifitracker.app.ui.WifiTrackerApp
 import com.wifitracker.app.ui.theme.WifiTrackerTheme
 
 class MainActivity : ComponentActivity() {
+    private val usageAccessGranted = mutableStateOf(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        usageAccessGranted.value = hasUsageAccessPermission()
         setContent {
             WifiTrackerTheme {
                 Surface(
@@ -27,12 +31,17 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background
                 ) {
                     WifiTrackerApp(
-                        hasUsageAccess = hasUsageAccessPermission(),
+                        hasUsageAccess = usageAccessGranted.value,
                         onRequestUsageAccess = { openUsageAccessSettings() }
                     )
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        usageAccessGranted.value = hasUsageAccessPermission()
     }
 
     private fun hasUsageAccessPermission(): Boolean {

@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -16,8 +17,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.wifitracker.app.data.AppUsage
 import com.wifitracker.app.data.UsagePeriod
+import com.wifitracker.app.data.WifiSpeedSample
 import com.wifitracker.app.data.WifiUsageRepository
+import com.wifitracker.app.data.WifiUsageReport
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -29,20 +36,59 @@ fun WifiTrackerApp(
     val repository = remember { WifiUsageRepository(context) }
 
     var selectedPeriod by remember { mutableStateOf(UsagePeriod.TODAY) }
-    var downloadSpeed by remember { mutableStateOf(0L) }
-    var uploadSpeed by remember { mutableStateOf(0L) }
+    var speedSample by remember {
+        mutableStateOf(
+            WifiSpeedSample(
+                0L,
+                0L,
+                isAvailable = false,
+                note = "Sampling Wi-Fi throughput; rates will appear after another reading."
+            )
+        )
+    }
     var currentSsid by remember { mutableStateOf("Not connected") }
     var signalStrength by remember { mutableStateOf(0) }
-    var totalUsage by remember { mutableStateOf(0L) }
-    var perAppUsage by remember { mutableStateOf<List<AppUsage>>(emptyList()) }
+    var usageReport by remember { mutableStateOf<WifiUsageReport?>(null) }
     var isRefreshing by remember { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
+
+    suspend fun refreshUsage(period: UsagePeriod) {
+        isRefreshing = true
+        try {
+            usageReport = withContext(Dispatchers.IO) {
+                repository.getWifiUsageReport(period)
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            usageReport = WifiUsageReport(
+                totalBytes = 0L,
+                rows = emptyList(),
+                isAvailable = false,
+                note = "Could not load Wi-Fi usage. Please refresh and try again."
+            )
+        } finally {
+            isRefreshing = false
+        }
+    }
 
     // Real-time speed + SSID polling
     LaunchedEffect(Unit) {
         while (true) {
-            val speeds = repository.getCurrentSpeeds()
-            downloadSpeed = speeds.first
-            uploadSpeed = speeds.second
+            try {
+                speedSample = withContext(Dispatchers.IO) {
+                    repository.getCurrentWifiSpeeds("screen")
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                speedSample = WifiSpeedSample(
+                    0L,
+                    0L,
+                    isAvailable = false,
+                    note = "Could not read Wi-Fi interface counters."
+                )
+            }
             currentSsid = repository.getCurrentSsid()
             signalStrength = repository.getSignalStrength()
             delay(1000)
@@ -52,9 +98,9 @@ fun WifiTrackerApp(
     // Load historical + per-app when period or permission changes
     LaunchedEffect(selectedPeriod, hasUsageAccess) {
         if (hasUsageAccess) {
-            isRefreshing = true
-            totalUsage = repository.getTotalWifiUsage(selectedPeriod)
-            perAppUsage = repository.getPerAppWifiUsage(selectedPeriod)
+            refreshUsage(selectedPeriod)
+        } else {
+            usageReport = null
             isRefreshing = false
         }
     }
@@ -67,12 +113,9 @@ fun WifiTrackerApp(
                     containerColor = MaterialTheme.colorScheme.surface
                 ),
                 actions = {
-                    IconButton(onClick = {
+                    IconButton(enabled = !isRefreshing, onClick = {
                         if (hasUsageAccess) {
-                            isRefreshing = true
-                            totalUsage = repository.getTotalWifiUsage(selectedPeriod)
-                            perAppUsage = repository.getPerAppWifiUsage(selectedPeriod)
-                            isRefreshing = false
+                            coroutineScope.launch { refreshUsage(selectedPeriod) }
                         }
                     }) {
                         Icon(Icons.Default.Refresh, contentDescription = "Refresh")
@@ -97,8 +140,7 @@ fun WifiTrackerApp(
                 item {
                     Spacer(modifier = Modifier.height(8.dp))
                     LiveSpeedCard(
-                        downloadSpeed = downloadSpeed,
-                        uploadSpeed = uploadSpeed,
+                        sample = speedSample,
                         ssid = currentSsid,
                         signal = signalStrength
                     )
@@ -114,30 +156,59 @@ fun WifiTrackerApp(
                 item {
                     TotalUsageCard(
                         period = selectedPeriod,
-                        bytes = totalUsage,
+                        report = usageReport,
                         isLoading = isRefreshing
                     )
                 }
 
                 item {
                     Text(
-                        text = "Top Apps (WiFi only)",
+                        text = "All Apps and System Usage (Wi-Fi only)",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.padding(top = 8.dp)
                     )
                 }
 
-                if (perAppUsage.isEmpty() && !isRefreshing) {
+                val displayedReport = usageReport
+                if (displayedReport == null || !displayedReport.isAvailable) {
                     item {
                         Text(
-                            text = "No app usage data yet for this period.",
+                            text = if (isRefreshing) "Loading Wi-Fi usage…" else
+                                displayedReport?.note ?: "Wi-Fi usage is not available yet.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(vertical = 12.dp)
+                        )
+                    }
+                } else if (displayedReport.rows.isEmpty()) {
+                    item {
+                        Text(
+                            text = displayedReport.note ?: "Android reported no Wi-Fi usage for this period.",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(vertical = 12.dp)
                         )
                     }
                 } else {
-                    items(perAppUsage.take(15)) { app ->
+                    val breakdownBytes = displayedReport.rows.fold(0L) { sum, row ->
+                        if (row.bytes > Long.MAX_VALUE - sum) Long.MAX_VALUE else sum + row.bytes
+                    }
+                    if (displayedReport.note != null) {
+                        item {
+                            Text(
+                                text = displayedReport.note,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    item {
+                        Text(
+                            text = "Breakdown total: ${formatBytes(breakdownBytes)} across ${displayedReport.rows.size} groups",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    itemsIndexed(displayedReport.rows, key = { index, app -> "${app.packageName}-$index" }) { _, app ->
                         AppUsageRow(appName = app.appName, bytes = app.bytes)
                     }
                 }
@@ -192,8 +263,7 @@ fun PermissionScreen(
 
 @Composable
 fun LiveSpeedCard(
-    downloadSpeed: Long,
-    uploadSpeed: Long,
+    sample: WifiSpeedSample,
     ssid: String,
     signal: Int
 ) {
@@ -231,8 +301,16 @@ fun LiveSpeedCard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
-                SpeedItem(label = "Download", speed = downloadSpeed, icon = Icons.Default.Download)
-                SpeedItem(label = "Upload", speed = uploadSpeed, icon = Icons.Default.Upload)
+                SpeedItem(label = "Download", speed = sample.downloadBytesPerSecond, isAvailable = sample.isAvailable, icon = Icons.Default.Download)
+                SpeedItem(label = "Upload", speed = sample.uploadBytesPerSecond, isAvailable = sample.isAvailable, icon = Icons.Default.Upload)
+            }
+            if (!sample.isAvailable && sample.note != null) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = sample.note,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                )
             }
         }
     }
@@ -242,13 +320,14 @@ fun LiveSpeedCard(
 fun SpeedItem(
     label: String,
     speed: Long,
+    isAvailable: Boolean,
     icon: androidx.compose.ui.graphics.vector.ImageVector
 ) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Icon(imageVector = icon, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
         Spacer(modifier = Modifier.height(4.dp))
         Text(
-            text = formatSpeed(speed),
+            text = if (isAvailable) formatSpeed(speed) else "—",
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onPrimaryContainer
@@ -288,7 +367,7 @@ fun PeriodSelector(
 @Composable
 fun TotalUsageCard(
     period: UsagePeriod,
-    bytes: Long,
+    report: WifiUsageReport?,
     isLoading: Boolean
 ) {
     Card(
@@ -303,9 +382,9 @@ fun TotalUsageCard(
         ) {
             Text(
                 text = when (period) {
-                    UsagePeriod.TODAY -> "Today's WiFi Usage"
-                    UsagePeriod.WEEK -> "This Week's WiFi Usage"
-                    UsagePeriod.MONTH -> "This Month's WiFi Usage"
+                    UsagePeriod.TODAY -> "Today's Wi-Fi Usage"
+                    UsagePeriod.WEEK -> "This Week's Wi-Fi Usage"
+                    UsagePeriod.MONTH -> "This Month's Wi-Fi Usage"
                 },
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -313,9 +392,16 @@ fun TotalUsageCard(
             Spacer(modifier = Modifier.height(8.dp))
             if (isLoading) {
                 CircularProgressIndicator(modifier = Modifier.size(32.dp))
+            } else if (report == null || !report.isAvailable) {
+                Text(
+                    text = "Unavailable",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             } else {
                 Text(
-                    text = formatBytes(bytes),
+                    text = formatBytes(report.totalBytes),
                     style = MaterialTheme.typography.displaySmall,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary

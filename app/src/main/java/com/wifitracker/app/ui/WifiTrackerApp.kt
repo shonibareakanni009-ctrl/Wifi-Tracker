@@ -1,5 +1,6 @@
 package com.wifitracker.app.ui
 
+import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
@@ -40,7 +41,18 @@ fun WifiTrackerApp(
     val context = LocalContext.current
     val repository = remember { WifiUsageRepository(context) }
 
-    var selectedPeriod by remember { mutableStateOf(UsagePeriod.TODAY) }
+    val settingsPreferences = remember {
+        context.getSharedPreferences("wifi_tracker_settings", Context.MODE_PRIVATE)
+    }
+    var defaultPeriod by remember {
+        mutableStateOf(
+            settingsPreferences.getString("default_usage_period", UsagePeriod.TODAY.name)
+                ?.let { saved -> runCatching { UsagePeriod.valueOf(saved) }.getOrNull() }
+                ?: UsagePeriod.TODAY
+        )
+    }
+    var selectedPeriod by remember { mutableStateOf(defaultPeriod) }
+    var showSettings by remember { mutableStateOf(false) }
     var speedSample by remember {
         mutableStateOf(
             WifiSpeedSample(
@@ -113,23 +125,52 @@ fun WifiTrackerApp(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Wifi Tracker", fontWeight = FontWeight.Bold) },
+                title = {
+                    Text(
+                        if (showSettings) "Settings & Network Tools" else "Wifi Tracker",
+                        fontWeight = FontWeight.Bold
+                    )
+                },
+                navigationIcon = {
+                    if (showSettings) {
+                        IconButton(onClick = { showSettings = false }) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        }
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface
                 ),
                 actions = {
-                    IconButton(enabled = !isRefreshing, onClick = {
-                        if (hasUsageAccess) {
-                            coroutineScope.launch { refreshUsage(selectedPeriod) }
+                    if (!showSettings) {
+                        IconButton(onClick = { showSettings = true }) {
+                            Icon(Icons.Default.Settings, contentDescription = "Settings and network tools")
                         }
-                    }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                        IconButton(enabled = !isRefreshing, onClick = {
+                            if (hasUsageAccess) {
+                                coroutineScope.launch { refreshUsage(selectedPeriod) }
+                            }
+                        }) {
+                            Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                        }
                     }
                 }
             )
         }
     ) { padding ->
-        if (!hasUsageAccess) {
+        if (showSettings) {
+            SettingsAndToolsScreen(
+                defaultPeriod = defaultPeriod,
+                onDefaultPeriodChanged = { period ->
+                    defaultPeriod = period
+                    selectedPeriod = period
+                    settingsPreferences.edit()
+                        .putString("default_usage_period", period.name)
+                        .apply()
+                },
+                modifier = Modifier.padding(padding)
+            )
+        } else if (!hasUsageAccess) {
             PermissionScreen(
                 modifier = Modifier.padding(padding),
                 onRequest = onRequestUsageAccess

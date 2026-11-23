@@ -26,16 +26,6 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Install Gradle (needed to generate wrapper)
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq gradle
-
-      - name: Create Gradle Wrapper
-        run: |
-          gradle wrapper --gradle-version 8.7
-          chmod +x gradlew
-
       - name: Decode keystore (if secrets exist)
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}

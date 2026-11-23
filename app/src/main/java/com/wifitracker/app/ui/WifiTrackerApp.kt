@@ -1,9 +1,9 @@
 package com.wifitracker.app.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -12,9 +12,14 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.graphics.drawable.toBitmap
 import com.wifitracker.app.data.AppUsage
 import com.wifitracker.app.data.UsagePeriod
 import com.wifitracker.app.data.WifiSpeedSample
@@ -209,7 +214,11 @@ fun WifiTrackerApp(
                         )
                     }
                     itemsIndexed(displayedReport.rows, key = { index, app -> "${app.packageName}-$index" }) { _, app ->
-                        AppUsageRow(appName = app.appName, bytes = app.bytes)
+                        AppUsageRow(
+                            appName = app.appName,
+                            bytes = app.bytes,
+                            iconPackageNames = app.iconPackageNames
+                        )
                     }
                 }
 
@@ -414,7 +423,8 @@ fun TotalUsageCard(
 @Composable
 fun AppUsageRow(
     appName: String,
-    bytes: Long
+    bytes: Long,
+    iconPackageNames: List<String> = emptyList()
 ) {
     Row(
         modifier = Modifier
@@ -426,11 +436,7 @@ fun AppUsageRow(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(
-            imageVector = Icons.Default.Apps,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary
-        )
+        AppUsageIcon(packageNames = iconPackageNames, appName = appName)
         Spacer(modifier = Modifier.width(12.dp))
         Text(
             text = appName,
@@ -460,5 +466,44 @@ fun formatSpeed(bytesPerSecond: Long): String {
         bytesPerSecond < 1024 -> "$bytesPerSecond B/s"
         bytesPerSecond < 1024 * 1024 -> "%.1f KB/s".format(bytesPerSecond / 1024.0)
         else -> "%.1f MB/s".format(bytesPerSecond / (1024.0 * 1024))
+    }
+}
+
+
+@Composable
+private fun AppUsageIcon(packageNames: List<String>, appName: String) {
+    val context = LocalContext.current
+    val packageKey = packageNames.joinToString(separator = "|")
+    var iconBitmap by remember(packageKey) { mutableStateOf<ImageBitmap?>(null) }
+
+    LaunchedEffect(packageKey) {
+        iconBitmap = withContext(Dispatchers.IO) {
+            packageNames.firstNotNullOfOrNull { packageName ->
+                try {
+                    context.packageManager.getApplicationIcon(packageName)
+                        .toBitmap(width = 96, height = 96)
+                        .asImageBitmap()
+                } catch (_: Exception) {
+                    null
+                }
+            }
+        }
+    }
+
+    val loadedIcon = iconBitmap
+    if (loadedIcon != null) {
+        Image(
+            bitmap = loadedIcon,
+            contentDescription = "$appName icon",
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.size(40.dp).clip(RoundedCornerShape(8.dp))
+        )
+    } else {
+        Icon(
+            imageVector = Icons.Default.Android,
+            contentDescription = "$appName icon unavailable; showing generic Android icon",
+            modifier = Modifier.size(40.dp),
+            tint = MaterialTheme.colorScheme.primary
+        )
     }
 }

@@ -18,7 +18,9 @@ data class AppUsage(
     /** A stable row key; shared UIDs may contain more than one package name. */
     val packageName: String,
     val appName: String,
-    val bytes: Long
+    val bytes: Long,
+    /** Installed packages that can supply an icon for this UID. */
+    val iconPackageNames: List<String> = emptyList()
 )
 
 data class WifiUsageReport(
@@ -144,7 +146,8 @@ class WifiUsageRepository(private val context: Context) {
                     rows += AppUsage(
                         packageName = packageName,
                         appName = getAppLabel(packageName),
-                        bytes = bytes
+                        bytes = bytes,
+                        iconPackageNames = listOf(packageName)
                     )
                 }
                 else -> {
@@ -154,7 +157,8 @@ class WifiUsageRepository(private val context: Context) {
                     rows += AppUsage(
                         packageName = packages.joinToString(separator = "+"),
                         appName = "Shared UID: ${labels.joinToString(" + ")}",
-                        bytes = bytes
+                        bytes = bytes,
+                        iconPackageNames = packages
                     )
                 }
             }

@@ -266,14 +266,14 @@ internal fun AppUsageHistoryScreen(
     }
 }
 
-private fun startOfTodayMillis(): Long = Calendar.getInstance().apply {
+internal fun startOfTodayMillis(): Long = Calendar.getInstance().apply {
     set(Calendar.HOUR_OF_DAY, 0)
     set(Calendar.MINUTE, 0)
     set(Calendar.SECOND, 0)
     set(Calendar.MILLISECOND, 0)
 }.timeInMillis
 
-private fun formatDay(timeMillis: Long): String =
+internal fun formatDay(timeMillis: Long): String =
     SimpleDateFormat("EEE, MMM d", Locale.getDefault()).format(Date(timeMillis))
 
 private fun formatBytesCompact(bytes: Long): String = when {

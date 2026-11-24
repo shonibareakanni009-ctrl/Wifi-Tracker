@@ -16,6 +16,9 @@ import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Router
 import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -33,6 +36,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -40,6 +44,9 @@ import com.wifitracker.app.data.InternetCheckResult
 import com.wifitracker.app.data.NetworkToolsRepository
 import com.wifitracker.app.data.UsagePeriod
 import com.wifitracker.app.data.WifiNetworkDetails
+import com.wifitracker.app.networkusage.WifiNetworkUsageService
+import com.wifitracker.app.networkusage.WifiNetworkUsageStore
+import com.wifitracker.app.networkusage.WifiNetworkUsageTotal
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -50,6 +57,10 @@ import java.net.UnknownHostException
 fun SettingsAndToolsScreen(
     defaultPeriod: UsagePeriod,
     onDefaultPeriodChanged: (UsagePeriod) -> Unit,
+    hasWifiNamePermission: Boolean,
+    onRequestWifiNamePermission: () -> Unit,
+    hasNotificationPermission: Boolean,
+    onRequestNotificationPermission: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -79,7 +90,7 @@ fun SettingsAndToolsScreen(
         }
     }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(hasWifiNamePermission) {
         refreshWifiDetails()
     }
 
@@ -130,6 +141,13 @@ fun SettingsAndToolsScreen(
                 }
             }
         }
+
+        NetworkUsageTrackingCard(
+            hasWifiNamePermission = hasWifiNamePermission,
+            onRequestWifiNamePermission = onRequestWifiNamePermission,
+            hasNotificationPermission = hasNotificationPermission,
+            onRequestNotificationPermission = onRequestNotificationPermission
+        )
 
         Text(
             text = "Network tools",
@@ -337,7 +355,187 @@ fun SettingsAndToolsScreen(
                 }
             }
         }
+        ReleaseSigningHelpCard()
         Spacer(modifier = Modifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun NetworkUsageTrackingCard(
+    hasWifiNamePermission: Boolean,
+    onRequestWifiNamePermission: () -> Unit,
+    hasNotificationPermission: Boolean,
+    onRequestNotificationPermission: () -> Unit
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val store = remember { WifiNetworkUsageStore(context.applicationContext) }
+    val scope = rememberCoroutineScope()
+    var totals by remember { mutableStateOf(emptyList<WifiNetworkUsageTotal>()) }
+    var isTracking by remember { mutableStateOf(false) }
+    var isLoading by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+
+    suspend fun refresh() {
+        isLoading = true
+        try {
+            val snapshot = withContext(Dispatchers.IO) {
+                store.getTotals() to store.isTracking()
+            }
+            totals = snapshot.first
+            isTracking = snapshot.second
+        } catch (_: Exception) {
+            totals = emptyList()
+            isTracking = false
+        } finally {
+            isLoading = false
+        }
+    }
+
+    LaunchedEffect(Unit) { refresh() }
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                androidx.compose.material3.Icon(
+                    imageVector = Icons.Default.Router,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = "Track usage by Wi-Fi name",
+                    modifier = Modifier.padding(start = 8.dp),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            Text(
+                "Optional, local-only tracking starts from now. Android does not provide past usage by Wi-Fi name, so these totals are approximate sampled RX/TX bytes and may have gaps. The ongoing notification includes a Stop action.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (!hasWifiNamePermission) {
+                Text(
+                    "Android requires location-sensitive Wi-Fi permission and may require Location Services to be enabled to reveal the connected network name. WiFi Tracker does not collect GPS location.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedButton(onClick = onRequestWifiNamePermission, modifier = Modifier.fillMaxWidth()) {
+                    Text("Allow Wi-Fi name access")
+                }
+            }
+            if (!hasNotificationPermission) {
+                Text(
+                    "Allow notifications before starting so Android can keep the required visible tracker notification.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedButton(onClick = onRequestNotificationPermission, modifier = Modifier.fillMaxWidth()) {
+                    Text("Allow notifications")
+                }
+            }
+            message?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+            }
+            Button(
+                onClick = {
+                    if (isTracking) {
+                        WifiNetworkUsageService.stopTracking(context)
+                        isTracking = false
+                        message = "Tracking stopped. Your saved local totals are kept."
+                        scope.launch { refresh() }
+                    } else if (!hasWifiNamePermission) {
+                        onRequestWifiNamePermission()
+                    } else if (!hasNotificationPermission) {
+                        onRequestNotificationPermission()
+                    } else {
+                        runCatching { WifiNetworkUsageService.startTracking(context) }
+                            .onSuccess {
+                                isTracking = true
+                                message = "Tracker started. It will wait until Wi-Fi and a readable network name are available."
+                            }
+                            .onFailure {
+                                message = "Could not start the tracker. Check notification permission and try again."
+                            }
+                    }
+                },
+                enabled = isTracking || (hasWifiNamePermission && hasNotificationPermission),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                androidx.compose.material3.Icon(
+                    imageVector = if (isTracking) Icons.Default.Stop else Icons.Default.PlayArrow,
+                    contentDescription = null
+                )
+                Text(
+                    if (isTracking) "Stop Wi-Fi name tracking" else "Start Wi-Fi name tracking",
+                    modifier = Modifier.padding(start = 8.dp)
+                )
+            }
+            if (isLoading) {
+                CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
+            } else if (totals.isEmpty()) {
+                Text(
+                    "No per-network totals yet. They appear after tracking has collected valid samples.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                Text("Saved on this device", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                totals.forEach { network -> DetailLine(network.ssid, formatBytes(network.totalBytes)) }
+            }
+            OutlinedButton(
+                onClick = { scope.launch { refresh() } },
+                enabled = !isLoading,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                androidx.compose.material3.Icon(Icons.Default.Refresh, contentDescription = null)
+                Text("Refresh tracked totals", modifier = Modifier.padding(start = 8.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReleaseSigningHelpCard() {
+    val uriHandler = LocalUriHandler.current
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                androidx.compose.material3.Icon(
+                    imageVector = Icons.Default.Security,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    "Release signing help",
+                    modifier = Modifier.padding(start = 8.dp),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            Text(
+                "Signing keys and passwords are not stored in WiFi Tracker. Manage them in the repository's GitHub Actions secrets; this app only provides a shortcut and the secret names.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                "Required secret names: KEYSTORE_BASE64, STORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD",
+                style = MaterialTheme.typography.bodySmall
+            )
+            OutlinedButton(
+                onClick = {
+                    runCatching {
+                        uriHandler.openUri("https://github.com/shonibareakanni009-ctrl/Wifi-Tracker/settings/secrets/actions")
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Open GitHub Actions secrets") }
+        }
     }
 }
 

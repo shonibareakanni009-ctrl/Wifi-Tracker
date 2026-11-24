@@ -1,8 +1,11 @@
 package com.wifitracker.app.ui
 
 import android.content.Context
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -16,12 +19,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
 import com.wifitracker.app.data.AppUsage
+import com.wifitracker.app.data.DailyWifiUsage
 import com.wifitracker.app.data.UsagePeriod
 import com.wifitracker.app.data.WifiSpeedSample
 import com.wifitracker.app.data.WifiUsageRepository
@@ -36,7 +41,12 @@ import kotlinx.coroutines.CancellationException
 @Composable
 fun WifiTrackerApp(
     hasUsageAccess: Boolean,
-    onRequestUsageAccess: () -> Unit
+    onRequestUsageAccess: () -> Unit,
+    hasWifiNamePermission: Boolean = false,
+    onRequestWifiNamePermission: () -> Unit = {},
+    hasNotificationPermission: Boolean = false,
+    onRequestNotificationPermission: () -> Unit = {},
+    isAppInForeground: Boolean = true
 ) {
     val context = LocalContext.current
     val repository = remember { WifiUsageRepository(context) }
@@ -53,6 +63,10 @@ fun WifiTrackerApp(
     }
     var selectedPeriod by remember { mutableStateOf(defaultPeriod) }
     var showSettings by remember { mutableStateOf(false) }
+    var selectedApp by remember { mutableStateOf<AppUsage?>(null) }
+    var selectedDayStart by remember { mutableStateOf(startOfTodayMillis()) }
+    var dailyUsage by remember { mutableStateOf(emptyList<DailyWifiUsage>()) }
+    var isLoadingDailyUsage by remember { mutableStateOf(false) }
     var speedSample by remember {
         mutableStateOf(
             WifiSpeedSample(
@@ -68,6 +82,9 @@ fun WifiTrackerApp(
     var usageReport by remember { mutableStateOf<WifiUsageReport?>(null) }
     var isRefreshing by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
+    val selectedDayReport = dailyUsage
+        .firstOrNull { it.dayStartMillis == selectedDayStart }
+        ?.report
 
     suspend fun refreshUsage(period: UsagePeriod) {
         isRefreshing = true
@@ -90,7 +107,8 @@ fun WifiTrackerApp(
     }
 
     // Real-time speed + SSID polling
-    LaunchedEffect(Unit) {
+    LaunchedEffect(hasWifiNamePermission, isAppInForeground) {
+        if (!isAppInForeground) return@LaunchedEffect
         while (true) {
             try {
                 speedSample = withContext(Dispatchers.IO) {
@@ -106,20 +124,47 @@ fun WifiTrackerApp(
                     note = "Could not read Wi-Fi interface counters."
                 )
             }
-            currentSsid = repository.getCurrentSsid()
+            currentSsid = if (hasWifiNamePermission) {
+                repository.getCurrentSsid()
+            } else {
+                "Allow Wi-Fi name access in Settings"
+            }
             signalStrength = repository.getSignalStrength()
             delay(1000)
         }
     }
 
-    // Load historical + per-app when period or permission changes
-    LaunchedEffect(selectedPeriod, hasUsageAccess) {
-        if (hasUsageAccess) {
-            refreshUsage(selectedPeriod)
-        } else {
+    // Refresh totals on return to the app and once a minute while visible. No background polling.
+    LaunchedEffect(hasUsageAccess, isAppInForeground, selectedPeriod) {
+        if (!hasUsageAccess) {
             usageReport = null
             isRefreshing = false
+            return@LaunchedEffect
         }
+        if (!isAppInForeground) return@LaunchedEffect
+        while (true) {
+            isLoadingDailyUsage = true
+            try {
+                dailyUsage = withContext(Dispatchers.IO) {
+                    repository.getCurrentWeekWifiUsage()
+                }
+                if (dailyUsage.none { it.dayStartMillis == selectedDayStart }) {
+                    selectedDayStart = startOfTodayMillis()
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                dailyUsage = emptyList()
+            } finally {
+                isLoadingDailyUsage = false
+            }
+            refreshUsage(selectedPeriod)
+            delay(60_000)
+        }
+    }
+
+    BackHandler(enabled = selectedApp != null || showSettings) {
+        if (selectedApp != null) selectedApp = null else showSettings = false
     }
 
     Scaffold(
@@ -127,13 +172,15 @@ fun WifiTrackerApp(
             TopAppBar(
                 title = {
                     Text(
-                        if (showSettings) "Settings & Network Tools" else "Wifi Tracker",
+                        selectedApp?.appName ?: if (showSettings) "Settings & Network Tools" else "Wifi Tracker",
                         fontWeight = FontWeight.Bold
                     )
                 },
                 navigationIcon = {
-                    if (showSettings) {
-                        IconButton(onClick = { showSettings = false }) {
+                    if (showSettings || selectedApp != null) {
+                        IconButton(onClick = {
+                            if (selectedApp != null) selectedApp = null else showSettings = false
+                        }) {
                             Icon(Icons.Default.ArrowBack, contentDescription = "Back")
                         }
                     }
@@ -142,13 +189,23 @@ fun WifiTrackerApp(
                     containerColor = MaterialTheme.colorScheme.surface
                 ),
                 actions = {
-                    if (!showSettings) {
+                    if (!showSettings && selectedApp == null) {
                         IconButton(onClick = { showSettings = true }) {
                             Icon(Icons.Default.Settings, contentDescription = "Settings and network tools")
                         }
                         IconButton(enabled = !isRefreshing, onClick = {
                             if (hasUsageAccess) {
-                                coroutineScope.launch { refreshUsage(selectedPeriod) }
+                                coroutineScope.launch {
+                                    refreshUsage(selectedPeriod)
+                                    isLoadingDailyUsage = true
+                                    try {
+                                        dailyUsage = withContext(Dispatchers.IO) {
+                                            repository.getCurrentWeekWifiUsage()
+                                        }
+                                    } finally {
+                                        isLoadingDailyUsage = false
+                                    }
+                                }
                             }
                         }) {
                             Icon(Icons.Default.Refresh, contentDescription = "Refresh")
@@ -158,9 +215,22 @@ fun WifiTrackerApp(
             )
         }
     ) { padding ->
-        if (showSettings) {
+        if (selectedApp != null) {
+            AppUsageHistoryScreen(
+                app = selectedApp!!,
+                dailyUsage = dailyUsage,
+                selectedDayStart = selectedDayStart,
+                onSelectDay = { selectedDayStart = it },
+                isLoading = isLoadingDailyUsage,
+                modifier = Modifier.padding(padding)
+            )
+        } else if (showSettings) {
             SettingsAndToolsScreen(
                 defaultPeriod = defaultPeriod,
+                hasWifiNamePermission = hasWifiNamePermission,
+                onRequestWifiNamePermission = onRequestWifiNamePermission,
+                hasNotificationPermission = hasNotificationPermission,
+                onRequestNotificationPermission = onRequestNotificationPermission,
                 onDefaultPeriodChanged = { period ->
                     defaultPeriod = period
                     selectedPeriod = period
@@ -208,57 +278,60 @@ fun WifiTrackerApp(
                 }
 
                 item {
-                    Text(
-                        text = "All Apps and System Usage (Wi-Fi only)",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.padding(top = 8.dp)
+                    DailyWifiUsageChart(
+                        dailyUsage = dailyUsage,
+                        selectedDayStart = selectedDayStart,
+                        isLoading = isLoadingDailyUsage,
+                        onSelectDay = { selectedDayStart = it }
                     )
                 }
 
-                val displayedReport = usageReport
-                if (displayedReport == null || !displayedReport.isAvailable) {
+                item {
+                    Text(
+                        text = "Wi-Fi usage on ${formatDay(selectedDayStart)}",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+
+                if (selectedDayReport == null || !selectedDayReport.isAvailable) {
                     item {
                         Text(
-                            text = if (isRefreshing) "Loading Wi-Fi usage…" else
-                                displayedReport?.note ?: "Wi-Fi usage is not available yet.",
+                            text = if (isLoadingDailyUsage) "Loading daily Wi-Fi history…" else
+                                selectedDayReport?.note ?: "Daily usage is not available yet.",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(vertical = 12.dp)
                         )
                     }
-                } else if (displayedReport.rows.isEmpty()) {
+                } else if (selectedDayReport.rows.isEmpty()) {
                     item {
                         Text(
-                            text = displayedReport.note ?: "Android reported no Wi-Fi usage for this period.",
+                            text = selectedDayReport.note ?: "Android reported no Wi-Fi usage on this date.",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(vertical = 12.dp)
                         )
                     }
                 } else {
-                    val breakdownBytes = displayedReport.rows.fold(0L) { sum, row ->
-                        if (row.bytes > Long.MAX_VALUE - sum) Long.MAX_VALUE else sum + row.bytes
-                    }
-                    if (displayedReport.note != null) {
-                        item {
-                            Text(
-                                text = displayedReport.note,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                    item {
+                        AppUsageDonut(
+                            rows = selectedDayReport.rows,
+                            totalBytes = selectedDayReport.totalBytes
+                        )
                     }
                     item {
                         Text(
-                            text = "Breakdown total: ${formatBytes(breakdownBytes)} across ${displayedReport.rows.size} groups",
+                            text = "Apps and system usage · Wi-Fi only · tap an app for its weekly history",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    itemsIndexed(displayedReport.rows, key = { index, app -> "${app.packageName}-$index" }) { _, app ->
+                    itemsIndexed(selectedDayReport.rows, key = { index, app -> "${app.packageName}-$index" }) { _, app ->
                         AppUsageRow(
                             appName = app.appName,
                             bytes = app.bytes,
-                            iconPackageNames = app.iconPackageNames
+                            iconPackageNames = app.iconPackageNames,
+                            onClick = { selectedApp = app }
                         )
                     }
                 }
@@ -465,11 +538,13 @@ fun TotalUsageCard(
 fun AppUsageRow(
     appName: String,
     bytes: Long,
-    iconPackageNames: List<String> = emptyList()
+    iconPackageNames: List<String> = emptyList(),
+    onClick: (() -> Unit)? = null
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clickable(enabled = onClick != null) { onClick?.invoke() }
             .background(
                 MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
                 RoundedCornerShape(12.dp)

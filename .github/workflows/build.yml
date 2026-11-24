@@ -5,6 +5,9 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -21,37 +24,58 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
-          packages: platform-tools
+          packages: platform-tools platforms;android-35 build-tools;35.0.0
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Decode keystore (if secrets exist)
+      - name: Prepare signing inputs
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          if [ -n "$KEYSTORE_BASE64" ]; then
-            echo "$KEYSTORE_BASE64" | base64 -d > app/upload-keystore.jks
-            echo "KEYSTORE_PATH=$(pwd)/app/upload-keystore.jks" >> $GITHUB_ENV
-            echo "KEYSTORE_PASSWORD=${{ secrets.STORE_PASSWORD }}" >> $GITHUB_ENV
-            echo "KEY_ALIAS=${{ secrets.KEY_ALIAS }}" >> $GITHUB_ENV
-            echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> $GITHUB_ENV
-            echo "Keystore decoded – will build signed release"
-          else
-            echo "No KEYSTORE_BASE64 – will build debug APK"
+          set -euo pipefail
+          if [ -z "${KEYSTORE_BASE64:-}" ]; then
+            echo "BUILD_VARIANT=debug" >> "$GITHUB_ENV"
+            echo "No signing keystore configured; building a debug APK."
+            exit 0
           fi
 
+          missing=()
+          [ -n "${STORE_PASSWORD:-}" ] || missing+=(STORE_PASSWORD)
+          [ -n "${KEY_ALIAS:-}" ] || missing+=(KEY_ALIAS)
+          [ -n "${KEY_PASSWORD:-}" ] || missing+=(KEY_PASSWORD)
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::KEYSTORE_BASE64 is set but required signing secrets are missing: ${missing[*]}"
+            exit 1
+          fi
+
+          umask 077
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$GITHUB_WORKSPACE/app/upload-keystore.jks"
+          test -s "$GITHUB_WORKSPACE/app/upload-keystore.jks"
+          printf 'KEYSTORE_PATH=%s/app/upload-keystore.jks\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+          echo "BUILD_VARIANT=release" >> "$GITHUB_ENV"
+          echo "Signing inputs prepared."
+
       - name: Build APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
-            echo "Building SIGNED release APK..."
+          set -euo pipefail
+          if [ "${BUILD_VARIANT:-debug}" = "release" ]; then
+            echo "Building signed release APK..."
             ./gradlew assembleRelease --no-daemon --stacktrace
           else
-            echo "Building DEBUG APK..."
+            echo "Building debug APK..."
             ./gradlew assembleDebug --no-daemon --stacktrace
           fi
 
       - name: List APKs
+        if: always()
         run: find app/build/outputs -name "*.apk" -type f 2>/dev/null || true
 
       - name: Upload APK
@@ -59,5 +83,9 @@ jobs:
         with:
           name: wifi-tracker-apk
           path: app/build/outputs/apk/**/*.apk
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 30
+
+      - name: Remove temporary signing keystore
+        if: always()
+        run: rm -f app/upload-keystore.jks

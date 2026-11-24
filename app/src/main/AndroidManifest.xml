@@ -6,6 +6,7 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
 
     <!-- Required for historical and per-app network stats -->
@@ -22,15 +23,37 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <permission
+        android:name="com.wifitracker.app.permission.READ_WIFI_USAGE"
+        android:protectionLevel="signature" />
 
     <application
         android:allowBackup="true"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.WifiTracker"
         tools:targetApi="35">
+
+        <service
+            android:name=".networkusage.WifiNetworkUsageService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-started local Wi-Fi usage sampling" />
+        </service>
+        <provider
+            android:name=".networkusage.WifiNetworkUsageProvider"
+            android:authorities="com.wifitracker.app.networkusage"
+            android:exported="true"
+            android:readPermission="com.wifitracker.app.permission.READ_WIFI_USAGE"
+            android:writePermission="com.wifitracker.app.permission.READ_WIFI_USAGE" />
 
         <activity
             android:name=".MainActivity"

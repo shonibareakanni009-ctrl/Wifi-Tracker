@@ -30,6 +30,11 @@ data class WifiUsageReport(
     val note: String? = null
 )
 
+data class DailyWifiUsage(
+    val dayStartMillis: Long,
+    val report: WifiUsageReport
+)
+
 data class WifiSpeedSample(
     val downloadBytesPerSecond: Long,
     val uploadBytesPerSecond: Long,
@@ -51,6 +56,13 @@ class WifiUsageRepository(private val context: Context) {
      */
     fun getWifiUsageReport(period: UsagePeriod): WifiUsageReport {
         val (start, end) = getTimeRange(period)
+        return getWifiUsageReport(start, end)
+    }
+
+    /** Returns Wi-Fi usage for an explicit interval, using the same reconciled device/UID totals. */
+    fun getWifiUsageReport(startTimeMillis: Long, endTimeMillis: Long): WifiUsageReport {
+        val start = startTimeMillis.coerceAtMost(endTimeMillis)
+        val end = endTimeMillis.coerceAtLeast(startTimeMillis)
 
         val deviceTotal = try {
             val bucket = networkStatsManager.querySummaryForDevice(
@@ -192,6 +204,47 @@ class WifiUsageRepository(private val context: Context) {
             isAvailable = true,
             note = note
         )
+    }
+
+    /**
+     * Reads one report per calendar day for the current local week. Android's historical network
+     * statistics remain the source of truth; days beyond today are returned as empty future days.
+     */
+    fun getCurrentWeekWifiUsage(): List<DailyWifiUsage> {
+        val now = System.currentTimeMillis()
+        val today = Calendar.getInstance().apply {
+            timeInMillis = now
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        val todayStart = today.timeInMillis
+        today.set(Calendar.DAY_OF_WEEK, today.firstDayOfWeek)
+        val weekStart = today.timeInMillis
+        val dayCursor = Calendar.getInstance().apply { timeInMillis = weekStart }
+        val result = mutableListOf<DailyWifiUsage>()
+
+        repeat(7) {
+            val dayStart = dayCursor.timeInMillis
+            val nextDay = (dayCursor.clone() as Calendar).apply {
+                add(Calendar.DAY_OF_MONTH, 1)
+            }.timeInMillis
+            if (dayStart > todayStart) {
+                result += DailyWifiUsage(
+                    dayStartMillis = dayStart,
+                    report = WifiUsageReport(0L, emptyList(), isAvailable = true)
+                )
+            } else {
+                val dayEnd = minOf(nextDay, now)
+                result += DailyWifiUsage(
+                    dayStartMillis = dayStart,
+                    report = getWifiUsageReport(dayStart, dayEnd)
+                )
+            }
+            dayCursor.add(Calendar.DAY_OF_MONTH, 1)
+        }
+        return result
     }
 
     /**
@@ -346,4 +399,5 @@ class WifiUsageRepository(private val context: Context) {
         }
         return cal.timeInMillis to end
     }
+
 }

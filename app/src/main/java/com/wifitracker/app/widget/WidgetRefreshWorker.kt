@@ -2,16 +2,20 @@ package com.wifitracker.app.widget
 
 import android.app.PendingIntent
 import android.appwidget.AppWidgetManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.os.SystemClock
 import android.widget.RemoteViews
-import androidx.work.Worker
+import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.wifitracker.app.MainActivity
 import com.wifitracker.app.R
 import com.wifitracker.app.data.UsagePeriod
 import com.wifitracker.app.data.WifiUsageRepository
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -20,11 +24,15 @@ import java.util.Locale
 class WidgetRefreshWorker(
     context: Context,
     params: WorkerParameters
-) : Worker(context, params) {
+) : CoroutineWorker(context, params) {
 
-    override fun doWork(): Result {
-        val ids = inputData.getIntArray(KEY_WIDGET_IDS) ?: return Result.failure()
+    override suspend fun doWork(): Result {
         val kind = inputData.getString(KEY_KIND) ?: return Result.failure()
+        val period = inputData.getString(KEY_PERIOD)
+            ?.let { runCatching { UsagePeriod.valueOf(it) }.getOrNull() }
+        val ids = inputData.getIntArray(KEY_WIDGET_IDS) ?: currentWidgetIds(kind, period)
+        if (ids.isEmpty()) return Result.success()
+
         return try {
             when (kind) {
                 KIND_USAGE -> refreshUsageWidgets(ids)
@@ -32,13 +40,15 @@ class WidgetRefreshWorker(
                 else -> return Result.failure()
             }
             Result.success()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (_: Exception) {
             showUnavailable(ids, kind)
             Result.success()
         }
     }
 
-    private fun refreshUsageWidgets(ids: IntArray) {
+    private suspend fun refreshUsageWidgets(ids: IntArray) {
         val period = inputData.getString(KEY_PERIOD)
             ?.let { runCatching { UsagePeriod.valueOf(it) }.getOrNull() }
             ?: return
@@ -47,9 +57,11 @@ class WidgetRefreshWorker(
             UsagePeriod.WEEK -> "This Week"
             UsagePeriod.MONTH -> "This Month"
         }
-        val report = WifiUsageRepository(applicationContext).getWifiUsageReport(period)
+        val report = withContext(Dispatchers.IO) {
+            WifiUsageRepository(applicationContext).getWifiUsageReport(period)
+        }
         val value = if (report.isAvailable) formatBytes(report.totalBytes) else "Unavailable"
-        val detail = if (report.isAvailable) "Updated ${timeNow()} · tap to refresh"
+        val detail = if (report.isAvailable) "Updated ${timeNow()} · periodic refresh"
             else "Open app to check Usage Access"
         ids.forEach { id ->
             val views = RemoteViews(applicationContext.packageName, R.layout.widget_usage)
@@ -61,17 +73,17 @@ class WidgetRefreshWorker(
         }
     }
 
-    private fun refreshSpeedWidgets(ids: IntArray) {
+    private suspend fun refreshSpeedWidgets(ids: IntArray) {
         val repository = WifiUsageRepository(applicationContext)
-        val speedText = if (!repository.isWifiConnected()) {
+        val isWifiConnected = withContext(Dispatchers.IO) { repository.isWifiConnected() }
+        val speedText = if (!isWifiConnected) {
             "Wi-Fi disconnected"
         } else {
-            var sample = repository.getCurrentWifiSpeeds("widget")
+            var sample = withContext(Dispatchers.IO) { repository.getCurrentWifiSpeeds("widget") }
             if (!sample.isAvailable && sample.note?.contains("Sampling", ignoreCase = true) == true) {
-                // The first counter read establishes a baseline. A short second sample avoids
-                // leaving widgets stuck on a warm-up state after a long idle period.
-                SystemClock.sleep(1_000L)
-                sample = repository.getCurrentWifiSpeeds("widget")
+                // The first counter read establishes a baseline. Suspend instead of blocking a worker thread.
+                delay(SPEED_SAMPLE_INTERVAL_MS)
+                sample = withContext(Dispatchers.IO) { repository.getCurrentWifiSpeeds("widget") }
             }
             if (sample.isAvailable) {
                 "↓ ${formatSpeed(sample.downloadBytesPerSecond)}  ↑ ${formatSpeed(sample.uploadBytesPerSecond)}"
@@ -84,10 +96,25 @@ class WidgetRefreshWorker(
         ids.forEach { id ->
             val views = RemoteViews(applicationContext.packageName, R.layout.widget_speed)
             views.setTextViewText(R.id.widget_speed, speedText)
-            views.setTextViewText(R.id.widget_updated, "Updated ${timeNow()} · tap to refresh")
+            views.setTextViewText(R.id.widget_updated, "Updated ${timeNow()} · periodic refresh")
             attachOpenAppAction(views, id)
             AppWidgetManager.getInstance(applicationContext).updateAppWidget(id, views)
         }
+    }
+
+    private fun currentWidgetIds(kind: String, period: UsagePeriod?): IntArray {
+        val receiverClass = when (kind) {
+            KIND_SPEED -> LiveSpeedWidgetReceiver::class.java
+            KIND_USAGE -> when (period) {
+                UsagePeriod.TODAY -> DailyUsageWidgetReceiver::class.java
+                UsagePeriod.WEEK -> WeeklyUsageWidgetReceiver::class.java
+                UsagePeriod.MONTH -> MonthlyUsageWidgetReceiver::class.java
+                null -> return intArrayOf()
+            }
+            else -> return intArrayOf()
+        }
+        return AppWidgetManager.getInstance(applicationContext)
+            .getAppWidgetIds(ComponentName(applicationContext, receiverClass))
     }
 
     private fun showUnavailable(ids: IntArray, kind: String) {
@@ -138,5 +165,6 @@ class WidgetRefreshWorker(
         const val KEY_KIND = "kind"
         const val KEY_PERIOD = "period"
         const val KEY_WIDGET_IDS = "widget_ids"
+        private const val SPEED_SAMPLE_INTERVAL_MS = 1_000L
     }
 }

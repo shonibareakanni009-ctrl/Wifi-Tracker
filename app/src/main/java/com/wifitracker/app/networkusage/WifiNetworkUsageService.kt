@@ -33,6 +33,7 @@ import java.util.concurrent.TimeUnit
 class WifiNetworkUsageService : Service() {
     private var scheduler: ScheduledExecutorService? = null
     private var lastNotificationText: String? = null
+    private var lastPrunedDay: String? = null
     private var baseline: Sample? = null
     private lateinit var database: WifiNetworkUsageDatabase
 
@@ -69,7 +70,7 @@ class WifiNetworkUsageService : Service() {
 
         try {
             createNotificationChannel()
-            val initialText = "Waiting for Wi-Fi and readable SSID access"
+            val initialText = waitingForSsidMessage()
             startAsForeground(buildNotification(initialText))
             setTracking(this, true)
             updateNotification(initialText)
@@ -114,11 +115,12 @@ class WifiNetworkUsageService : Service() {
 
     private fun sampleSafely() {
         try {
+            pruneExpiredRowsOnceToday()
             val current = readSample()
             if (current == null) {
                 // Force a fresh baseline after any period with no valid SSID/interface.
                 baseline = null
-                updateNotification("Waiting for Wi-Fi and readable SSID access")
+                updateNotification(waitingForSsidMessage())
                 return
             }
             val previous = baseline
@@ -154,8 +156,30 @@ class WifiNetworkUsageService : Service() {
         } catch (_: Exception) {
             // Missing permissions, Wi-Fi changes, service/device quirks, or DB errors never crash the service.
             baseline = null
-            updateNotification("Waiting for Wi-Fi and readable SSID access")
+            updateNotification(waitingForSsidMessage())
         }
+    }
+
+    private fun pruneExpiredRowsOnceToday() {
+        val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+        if (lastPrunedDay == today) return
+        val preferences = getSharedPreferences(
+            WifiNetworkUsageStore.SETTINGS_PREFERENCES,
+            Context.MODE_PRIVATE
+        )
+        val retentionDays = preferences.getInt(
+            WifiNetworkUsageStore.PREF_RETENTION_DAYS,
+            WifiNetworkUsageStore.DEFAULT_RETENTION_DAYS
+        )
+        runCatching { WifiNetworkUsageStore(applicationContext).pruneExpired(retentionDays) }
+            .onSuccess { lastPrunedDay = today }
+    }
+
+    private fun waitingForSsidMessage(): String = when {
+        ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) !=
+            PackageManager.PERMISSION_GRANTED -> "Allow Wi-Fi name permission to track per network"
+        !isLocationEnabled() -> "Turn on Location Services to identify the Wi-Fi network"
+        else -> "Waiting for a connected Wi-Fi network and readable name"
     }
 
     private fun readSample(): Sample? {

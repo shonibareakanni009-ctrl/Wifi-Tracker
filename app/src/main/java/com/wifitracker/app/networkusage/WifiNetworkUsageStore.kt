@@ -4,6 +4,10 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 
 /** Aggregate totals for one SSID across all locally recorded dates. */
 data class WifiNetworkUsageTotal(
@@ -49,6 +53,22 @@ class WifiNetworkUsageStore(context: Context) {
         }
     }
 
+    /** Keep the selected number of local calendar days; 0 means the user chose to keep all. */
+    fun pruneExpired(retentionDays: Int): Int {
+        if (retentionDays <= 0) return 0
+        val daysToKeep = retentionDays.coerceAtMost(3650)
+        val cutoffDay = Calendar.getInstance().apply {
+            time = Date()
+            add(Calendar.DAY_OF_MONTH, -(daysToKeep - 1))
+        }.let { SimpleDateFormat("yyyy-MM-dd", Locale.US).format(it.time) }
+        val helper = WifiNetworkUsageDatabase(appContext)
+        return try {
+            helper.pruneOlderThan(cutoffDay)
+        } finally {
+            helper.close()
+        }
+    }
+
     /** True means the user-started tracker was asked to remain active (including system restart). */
     fun isTracking(): Boolean = appContext
         .getSharedPreferences(WifiNetworkUsageService.PREFERENCES_NAME, Context.MODE_PRIVATE)
@@ -70,6 +90,9 @@ class WifiNetworkUsageStore(context: Context) {
         const val COLUMN_TOTAL_BYTES = "total_bytes"
 
         const val READ_PERMISSION = "com.wifitracker.app.permission.READ_WIFI_USAGE"
+        const val SETTINGS_PREFERENCES = "wifi_tracker_settings"
+        const val PREF_RETENTION_DAYS = "ssid_history_retention_days"
+        const val DEFAULT_RETENTION_DAYS = 365
     }
 }
 
@@ -137,6 +160,12 @@ internal class WifiNetworkUsageDatabase(context: Context) :
             db.endTransaction()
         }
     }
+
+    fun pruneOlderThan(cutoffDay: String): Int = writableDatabase.delete(
+        TABLE_DAILY,
+        "$COL_DAY < ?",
+        arrayOf(cutoffDay)
+    )
 
     companion object {
         const val TABLE_DAILY = "wifi_usage_daily"

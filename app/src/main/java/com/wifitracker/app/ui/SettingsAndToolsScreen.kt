@@ -1,5 +1,7 @@
 package com.wifitracker.app.ui
 
+import android.content.Intent
+import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -61,6 +63,7 @@ fun SettingsAndToolsScreen(
     onRequestWifiNamePermission: () -> Unit,
     hasNotificationPermission: Boolean,
     onRequestNotificationPermission: () -> Unit,
+    isAppInForeground: Boolean,
     modifier: Modifier = Modifier
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -90,8 +93,8 @@ fun SettingsAndToolsScreen(
         }
     }
 
-    LaunchedEffect(hasWifiNamePermission) {
-        refreshWifiDetails()
+    LaunchedEffect(hasWifiNamePermission, isAppInForeground) {
+        if (isAppInForeground) refreshWifiDetails()
     }
 
     Column(
@@ -146,7 +149,8 @@ fun SettingsAndToolsScreen(
             hasWifiNamePermission = hasWifiNamePermission,
             onRequestWifiNamePermission = onRequestWifiNamePermission,
             hasNotificationPermission = hasNotificationPermission,
-            onRequestNotificationPermission = onRequestNotificationPermission
+            onRequestNotificationPermission = onRequestNotificationPermission,
+            isAppInForeground = isAppInForeground
         )
 
         Text(
@@ -179,6 +183,31 @@ fun SettingsAndToolsScreen(
                     DetailLine("Status", if (wifiDetails.isConnected) "Connected" else "Not connected")
                     if (wifiDetails.isConnected) {
                         DetailLine("Network", wifiDetails.ssid)
+                        if (wifiDetails.ssidPermissionRequired) {
+                            Text(
+                                "Android hides the Wi-Fi name until Location permission is granted. WiFi Tracker does not read GPS coordinates.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            OutlinedButton(
+                                onClick = onRequestWifiNamePermission,
+                                modifier = Modifier.fillMaxWidth()
+                            ) { Text("Allow Wi-Fi name access") }
+                        } else if (wifiDetails.locationServicesRequired) {
+                            Text(
+                                "Location Services are off. Android requires them enabled to reveal the connected Wi-Fi name; no GPS location is collected.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            OutlinedButton(
+                                onClick = {
+                                    runCatching {
+                                        context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) { Text("Open Location Settings") }
+                        }
                         DetailLine("Local IP", wifiDetails.localAddress)
                         DetailLine("Gateway", wifiDetails.gatewayAddress)
                         DetailLine(
@@ -365,11 +394,23 @@ private fun NetworkUsageTrackingCard(
     hasWifiNamePermission: Boolean,
     onRequestWifiNamePermission: () -> Unit,
     hasNotificationPermission: Boolean,
-    onRequestNotificationPermission: () -> Unit
+    onRequestNotificationPermission: () -> Unit,
+    isAppInForeground: Boolean
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val store = remember { WifiNetworkUsageStore(context.applicationContext) }
     val scope = rememberCoroutineScope()
+    val settingsPreferences = remember {
+        context.getSharedPreferences(WifiNetworkUsageStore.SETTINGS_PREFERENCES, android.content.Context.MODE_PRIVATE)
+    }
+    var retentionDays by remember {
+        mutableStateOf(
+            settingsPreferences.getInt(
+                WifiNetworkUsageStore.PREF_RETENTION_DAYS,
+                WifiNetworkUsageStore.DEFAULT_RETENTION_DAYS
+            )
+        )
+    }
     var totals by remember { mutableStateOf(emptyList<WifiNetworkUsageTotal>()) }
     var isTracking by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(false) }
@@ -379,6 +420,7 @@ private fun NetworkUsageTrackingCard(
         isLoading = true
         try {
             val snapshot = withContext(Dispatchers.IO) {
+                store.pruneExpired(retentionDays)
                 store.getTotals() to store.isTracking()
             }
             totals = snapshot.first
@@ -391,7 +433,9 @@ private fun NetworkUsageTrackingCard(
         }
     }
 
-    LaunchedEffect(Unit) { refresh() }
+    LaunchedEffect(isAppInForeground) {
+        if (isAppInForeground) refresh()
+    }
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -412,7 +456,7 @@ private fun NetworkUsageTrackingCard(
                 )
             }
             Text(
-                "Optional, local-only tracking starts from now. Android does not provide past usage by Wi-Fi name, so these totals are approximate sampled RX/TX bytes and may have gaps. The ongoing notification includes a Stop action.",
+                "Tracking is optional and local-only. Per-network totals start with the first valid sample—Android cannot provide older per-Wi-Fi history—and grow only while the foreground tracker is on. Sampled RX/TX totals are approximate and may have gaps; the ongoing notification has a Stop action.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -434,6 +478,34 @@ private fun NetworkUsageTrackingCard(
                 )
                 OutlinedButton(onClick = onRequestNotificationPermission, modifier = Modifier.fillMaxWidth()) {
                     Text("Allow notifications")
+                }
+            }
+            Text("Per-network history retention", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+            Text(
+                if (retentionDays == 0) "Daily totals are kept indefinitely."
+                else "Daily totals older than ${retentionDays} days are removed automatically. A shorter setting deletes older saved totals during refresh.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                listOf(90 to "90 days", 365 to "1 year", 0 to "Keep all").forEach { (days, label) ->
+                    FilterChip(
+                        selected = retentionDays == days,
+                        onClick = {
+                            retentionDays = days
+                            settingsPreferences.edit()
+                                .putInt(WifiNetworkUsageStore.PREF_RETENTION_DAYS, days)
+                                .apply()
+                            message = if (days == 0) "Per-network history will be kept indefinitely."
+                            else "History is now retained for $days days; older daily rows are pruned."
+                            scope.launch { refresh() }
+                        },
+                        label = { Text(label) },
+                        modifier = Modifier.weight(1f)
+                    )
                 }
             }
             message?.let {

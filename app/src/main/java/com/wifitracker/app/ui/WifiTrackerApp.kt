@@ -231,6 +231,7 @@ fun WifiTrackerApp(
                 onRequestWifiNamePermission = onRequestWifiNamePermission,
                 hasNotificationPermission = hasNotificationPermission,
                 onRequestNotificationPermission = onRequestNotificationPermission,
+                isAppInForeground = isAppInForeground,
                 onDefaultPeriodChanged = { period ->
                     defaultPeriod = period
                     selectedPeriod = period
@@ -424,8 +425,11 @@ fun LiveSpeedCard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
-                SpeedItem(label = "Download", speed = sample.downloadBytesPerSecond, isAvailable = sample.isAvailable, icon = Icons.Default.Download)
-                SpeedItem(label = "Upload", speed = sample.uploadBytesPerSecond, isAvailable = sample.isAvailable, icon = Icons.Default.Upload)
+                val unavailableLabel = if (
+                    sample.note?.contains("Sampling", ignoreCase = true) == true
+                ) "Sampling…" else "—"
+                SpeedItem(label = "Download", speed = sample.downloadBytesPerSecond, isAvailable = sample.isAvailable, unavailableLabel = unavailableLabel, icon = Icons.Default.Download)
+                SpeedItem(label = "Upload", speed = sample.uploadBytesPerSecond, isAvailable = sample.isAvailable, unavailableLabel = unavailableLabel, icon = Icons.Default.Upload)
             }
             if (!sample.isAvailable && sample.note != null) {
                 Spacer(modifier = Modifier.height(8.dp))
@@ -444,13 +448,14 @@ fun SpeedItem(
     label: String,
     speed: Long,
     isAvailable: Boolean,
+    unavailableLabel: String = "—",
     icon: androidx.compose.ui.graphics.vector.ImageVector
 ) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Icon(imageVector = icon, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
         Spacer(modifier = Modifier.height(4.dp))
         Text(
-            text = if (isAvailable) formatSpeed(speed) else "—",
+            text = if (isAvailable) formatSpeed(speed) else unavailableLabel,
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onPrimaryContainer
@@ -522,6 +527,14 @@ fun TotalUsageCard(
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                report?.note?.let { note ->
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = note,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             } else {
                 Text(
                     text = formatBytes(report.totalBytes),

@@ -1,12 +1,18 @@
 package com.wifitracker.app.data
 
+import android.Manifest
 import android.app.usage.NetworkStats
 import android.app.usage.NetworkStatsManager
 import android.content.Context
+import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.TrafficStats
 import android.net.wifi.WifiManager
+import android.os.Build
+import android.provider.Settings
+import androidx.core.content.ContextCompat
 import java.util.Calendar
 
 
@@ -307,11 +313,16 @@ class WifiUsageRepository(private val context: Context) {
 
     fun getCurrentSsid(): String {
         return try {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) !=
+                PackageManager.PERMISSION_GRANTED
+            ) return "Allow Wi-Fi name access"
+            if (!isLocationEnabled()) return "Turn on Location Services to show Wi-Fi name"
+            if (!isWifiConnected()) return "Not connected"
             val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
             val ssid = wifiManager.connectionInfo?.ssid?.removeSurrounding("\"")
-            if (ssid.isNullOrBlank() || ssid == "<unknown ssid>") "Not connected" else ssid
+            if (ssid.isNullOrBlank() || ssid == "<unknown ssid>") "Wi-Fi name unavailable" else ssid
         } catch (_: Exception) {
-            "Not connected"
+            "Wi-Fi name unavailable"
         }
     }
 
@@ -326,6 +337,19 @@ class WifiUsageRepository(private val context: Context) {
     }
 
     fun isWifiConnected(): Boolean = getWifiInterfaceName() != null
+
+    private fun isLocationEnabled(): Boolean = try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            (context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager)
+                ?.isLocationEnabled == true
+        } else {
+            @Suppress("DEPRECATION")
+            Settings.Secure.getInt(context.contentResolver, Settings.Secure.LOCATION_MODE) !=
+                Settings.Secure.LOCATION_MODE_OFF
+        }
+    } catch (_: Exception) {
+        false
+    }
 
     private fun getWifiInterfaceName(): String? {
         return try {

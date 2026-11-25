@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import com.wifitracker.app.ui.WifiTrackerApp
 import com.wifitracker.app.ui.theme.WifiTrackerTheme
+import com.wifitracker.app.widget.WifiTrackerWidgetUpdater
 
 class MainActivity : ComponentActivity() {
     private val usageAccessGranted = mutableStateOf(false)
@@ -68,6 +69,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        refreshPermissionStates()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) refreshPermissionStates()
+    }
+
+    private fun refreshPermissionStates() {
         usageAccessGranted.value = hasUsageAccessPermission()
         wifiNamePermissionGranted.value = hasWifiNamePermission()
         notificationPermissionGranted.value = hasNotificationPermission()
@@ -76,6 +86,7 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         isAppInForeground.value = true
+        WifiTrackerWidgetUpdater.refreshAll(this)
     }
 
     override fun onStop() {

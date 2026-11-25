@@ -3,103 +3,82 @@ package com.wifitracker.app.widget
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
 import android.content.BroadcastReceiver
+import android.content.ComponentName
 import android.content.Context
-import android.widget.RemoteViews
+import androidx.work.Data
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
 import com.wifitracker.app.R
 import com.wifitracker.app.data.UsagePeriod
-import com.wifitracker.app.data.WifiUsageRepository
+import java.util.concurrent.Executor
 
 class DailyUsageWidgetReceiver : AppWidgetProvider() {
     override fun onUpdate(context: Context, appWidgetManager: AppWidgetManager, appWidgetIds: IntArray) {
-        updateUsageWidgets(context, appWidgetManager, appWidgetIds, UsagePeriod.TODAY, "Today", goAsync())
+        enqueueUpdate(context, appWidgetIds, WidgetRefreshWorker.KIND_USAGE, UsagePeriod.TODAY, goAsync())
     }
 }
 
 class WeeklyUsageWidgetReceiver : AppWidgetProvider() {
     override fun onUpdate(context: Context, appWidgetManager: AppWidgetManager, appWidgetIds: IntArray) {
-        updateUsageWidgets(context, appWidgetManager, appWidgetIds, UsagePeriod.WEEK, "This Week", goAsync())
+        enqueueUpdate(context, appWidgetIds, WidgetRefreshWorker.KIND_USAGE, UsagePeriod.WEEK, goAsync())
     }
 }
 
 class MonthlyUsageWidgetReceiver : AppWidgetProvider() {
     override fun onUpdate(context: Context, appWidgetManager: AppWidgetManager, appWidgetIds: IntArray) {
-        updateUsageWidgets(context, appWidgetManager, appWidgetIds, UsagePeriod.MONTH, "This Month", goAsync())
+        enqueueUpdate(context, appWidgetIds, WidgetRefreshWorker.KIND_USAGE, UsagePeriod.MONTH, goAsync())
     }
-}
-
-private fun updateUsageWidgets(
-    context: Context,
-    appWidgetManager: AppWidgetManager,
-    appWidgetIds: IntArray,
-    period: UsagePeriod,
-    title: String,
-    pendingResult: BroadcastReceiver.PendingResult
-) {
-    Thread({
-        try {
-            val report = WifiUsageRepository(context.applicationContext).getWifiUsageReport(period)
-            val value = if (report.isAvailable) formatBytes(report.totalBytes) else "Unavailable"
-            appWidgetIds.forEach { id ->
-                val views = RemoteViews(context.packageName, R.layout.widget_usage)
-                views.setTextViewText(R.id.widget_title, title)
-                views.setTextViewText(R.id.widget_value, value)
-                appWidgetManager.updateAppWidget(id, views)
-            }
-        } catch (_: Exception) {
-            appWidgetIds.forEach { id ->
-                val views = RemoteViews(context.packageName, R.layout.widget_usage)
-                views.setTextViewText(R.id.widget_title, title)
-                views.setTextViewText(R.id.widget_value, "Unavailable")
-                appWidgetManager.updateAppWidget(id, views)
-            }
-        } finally {
-            pendingResult.finish()
-        }
-    }, "wifi-usage-widget").start()
 }
 
 class LiveSpeedWidgetReceiver : AppWidgetProvider() {
     override fun onUpdate(context: Context, appWidgetManager: AppWidgetManager, appWidgetIds: IntArray) {
-        val pendingResult = goAsync()
-        Thread({
-            try {
-                val sample = WifiUsageRepository(context.applicationContext).getCurrentWifiSpeeds("widget")
-                val text = if (sample.isAvailable) {
-                    "↓ ${formatSpeed(sample.downloadBytesPerSecond)}  ↑ ${formatSpeed(sample.uploadBytesPerSecond)}"
-                } else {
-                    "Wi-Fi speed unavailable"
-                }
-                appWidgetIds.forEach { id ->
-                    val views = RemoteViews(context.packageName, R.layout.widget_speed)
-                    views.setTextViewText(R.id.widget_speed, text)
-                    appWidgetManager.updateAppWidget(id, views)
-                }
-            } catch (_: Exception) {
-                appWidgetIds.forEach { id ->
-                    val views = RemoteViews(context.packageName, R.layout.widget_speed)
-                    views.setTextViewText(R.id.widget_speed, "Wi-Fi speed unavailable")
-                    appWidgetManager.updateAppWidget(id, views)
-                }
-            } finally {
-                pendingResult.finish()
-            }
-        }, "wifi-speed-widget").start()
+        enqueueUpdate(context, appWidgetIds, WidgetRefreshWorker.KIND_SPEED, null, goAsync())
     }
 }
 
-private fun formatBytes(bytes: Long): String {
-    return when {
-        bytes < 1024 -> "$bytes B"
-        bytes < 1024 * 1024 -> "%.1f KB".format(bytes / 1024.0)
-        bytes < 1024 * 1024 * 1024 -> "%.1f MB".format(bytes / (1024.0 * 1024))
-        else -> "%.2f GB".format(bytes / (1024.0 * 1024 * 1024))
+/** Only does quick scheduling in the broadcast; NetworkStatsManager work runs in WorkManager. */
+private fun enqueueUpdate(
+    context: Context,
+    widgetIds: IntArray,
+    kind: String,
+    period: UsagePeriod?,
+    pendingResult: BroadcastReceiver.PendingResult? = null
+) {
+    if (widgetIds.isEmpty()) {
+        pendingResult?.finish()
+        return
+    }
+    val requestData = Data.Builder()
+        .putString(WidgetRefreshWorker.KEY_KIND, kind)
+        .putIntArray(WidgetRefreshWorker.KEY_WIDGET_IDS, widgetIds)
+        .apply { period?.let { putString(WidgetRefreshWorker.KEY_PERIOD, it.name) } }
+        .build()
+    val work = OneTimeWorkRequestBuilder<WidgetRefreshWorker>()
+        .setInputData(requestData)
+        .build()
+    try {
+        val operation = WorkManager.getInstance(context.applicationContext)
+            .enqueueUniqueWork("wifi-widget-$kind-${period?.name ?: "speed"}", ExistingWorkPolicy.REPLACE, work)
+        operation.result.addListener({ pendingResult?.finish() }, Executor { command -> command.run() })
+    } catch (_: Exception) {
+        pendingResult?.finish()
     }
 }
 
-private fun formatSpeed(bytesPerSecond: Long): String {
-    return when {
-        bytesPerSecond < 1024 -> "$bytesPerSecond B/s"
-        bytesPerSecond < 1024 * 1024 -> "%.0f KB/s".format(bytesPerSecond / 1024.0)
-        else -> "%.1f MB/s".format(bytesPerSecond / (1024.0 * 1024))
+/** Refresh every installed widget when the user opens the app or returns from Android Settings. */
+object WifiTrackerWidgetUpdater {
+    fun refreshAll(context: Context) {
+        val manager = AppWidgetManager.getInstance(context)
+        val providers: List<Triple<Class<out AppWidgetProvider>, String, UsagePeriod?>> = listOf(
+            Triple(DailyUsageWidgetReceiver::class.java, WidgetRefreshWorker.KIND_USAGE, UsagePeriod.TODAY),
+            Triple(WeeklyUsageWidgetReceiver::class.java, WidgetRefreshWorker.KIND_USAGE, UsagePeriod.WEEK),
+            Triple(MonthlyUsageWidgetReceiver::class.java, WidgetRefreshWorker.KIND_USAGE, UsagePeriod.MONTH),
+            Triple(LiveSpeedWidgetReceiver::class.java, WidgetRefreshWorker.KIND_SPEED, null)
+        )
+        providers.forEach { (receiverClass, kind, period) ->
+            val ids = manager.getAppWidgetIds(ComponentName(context, receiverClass))
+            enqueueUpdate(context, ids, kind, period)
+        }
     }
 }

@@ -14,7 +14,9 @@
         android:name="android.permission.PACKAGE_USAGE_STATS"
         tools:ignore="ProtectedPermissions" />
 
-    <!-- Needed to resolve per-UID usage records to installed app names and icons on Android 11+. -->
+    <!-- Needed to resolve arbitrary per-UID usage records to installed app names/icons on Android 11+.
+         Keep for the sideload build's full app-attribution feature; Google Play requires a declaration
+         and approval for this broad visibility permission. See docs/PLAY_STORE_POLICY.md. -->
     <uses-permission
         android:name="android.permission.QUERY_ALL_PACKAGES"
         tools:ignore="QueryAllPackagesPermission" />

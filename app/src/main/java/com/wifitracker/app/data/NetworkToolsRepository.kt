@@ -1,11 +1,17 @@
 package com.wifitracker.app.data
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
+import android.os.Build
+import android.provider.Settings
 import android.os.SystemClock
+import androidx.core.content.ContextCompat
 import java.net.HttpURLConnection
 import java.net.Inet4Address
 import java.net.InetAddress
@@ -20,7 +26,9 @@ data class WifiNetworkDetails(
     val gatewayAddress: String = "Unavailable",
     val dnsServers: List<String> = emptyList(),
     val signalDbm: Int? = null,
-    val linkSpeedMbps: Int? = null
+    val linkSpeedMbps: Int? = null,
+    val ssidPermissionRequired: Boolean = false,
+    val locationServicesRequired: Boolean = false
 )
 
 data class InternetCheckResult(
@@ -43,13 +51,22 @@ class NetworkToolsRepository(private val context: Context) {
         } catch (_: Exception) {
             null
         }
-        val ssid = wifiInfo?.ssid
-            ?.removeSurrounding("\"")
-            ?.takeIf { it.isNotBlank() && it != "<unknown ssid>" }
-            ?: "Unavailable"
-
         if (wifiNetwork == null) {
             return WifiNetworkDetails(ssid = "Not connected")
+        }
+
+        val hasLocationPermission = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        val locationEnabled = isLocationEnabled()
+        val ssid = when {
+            !hasLocationPermission -> "Permission required"
+            !locationEnabled -> "Location Services off"
+            else -> wifiInfo?.ssid
+                ?.removeSurrounding("\"")
+                ?.takeIf { it.isNotBlank() && !it.equals("<unknown ssid>", ignoreCase = true) }
+                ?: "Wi-Fi name unavailable"
         }
 
         val linkProperties = try {
@@ -78,7 +95,9 @@ class NetworkToolsRepository(private val context: Context) {
             gatewayAddress = gatewayAddress,
             dnsServers = dnsServers,
             signalDbm = wifiInfo?.rssi?.takeIf { it in -100..-1 },
-            linkSpeedMbps = wifiInfo?.linkSpeed?.takeIf { it > 0 }
+            linkSpeedMbps = wifiInfo?.linkSpeed?.takeIf { it > 0 },
+            ssidPermissionRequired = !hasLocationPermission,
+            locationServicesRequired = hasLocationPermission && !locationEnabled
         )
     }
 
@@ -155,6 +174,10 @@ class NetworkToolsRepository(private val context: Context) {
 
     private fun findWifiNetwork(connectivityManager: ConnectivityManager): Network? {
         return try {
+            val active = connectivityManager.activeNetwork
+            if (active != null && connectivityManager.getNetworkCapabilities(active)
+                    ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+            ) return active
             connectivityManager.allNetworks.firstOrNull { network ->
                 connectivityManager.getNetworkCapabilities(network)
                     ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
@@ -162,5 +185,18 @@ class NetworkToolsRepository(private val context: Context) {
         } catch (_: Exception) {
             null
         }
+    }
+
+    private fun isLocationEnabled(): Boolean = try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            (context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager)
+                ?.isLocationEnabled == true
+        } else {
+            @Suppress("DEPRECATION")
+            Settings.Secure.getInt(context.contentResolver, Settings.Secure.LOCATION_MODE) !=
+                Settings.Secure.LOCATION_MODE_OFF
+        }
+    } catch (_: Exception) {
+        false
     }
 }

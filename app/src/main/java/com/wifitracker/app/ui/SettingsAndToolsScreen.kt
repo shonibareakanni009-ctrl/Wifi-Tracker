@@ -456,7 +456,7 @@ private fun NetworkUsageTrackingCard(
                 )
             }
             Text(
-                "Tracking is optional and local-only. After you tap Start, the foreground service keeps sampling while you use other apps, with an ongoing notification and Stop action. It does not auto-start after a device reboot. Per-network totals start with the first valid sample—Android cannot provide older per-Wi-Fi history—and sampled RX/TX totals are approximate and may have gaps.",
+                "Tracking is optional and local-only. After you tap Start, the foreground service keeps sampling while you use other apps, with an ongoing notification and Stop action. If it is still running when the phone reboots, WiFi Tracker tries to resume it after startup; tap Stop first if you do not want it to resume. Per-network totals start with the first valid sample—Android cannot provide older per-Wi-Fi history—and sampled RX/TX totals are approximate and may have gaps.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

@@ -55,6 +55,9 @@ data class WifiSpeedSample(
     val note: String? = null
 )
 
+// The user reported flashing this phone in December 2025; do not roll this baseline forward yearly.
+private const val PHONE_FLASH_HISTORY_YEAR = 2025
+
 class WifiUsageRepository(private val context: Context) {
 
     private val networkStatsManager =
@@ -86,15 +89,15 @@ class WifiUsageRepository(private val context: Context) {
     }
 
     /**
-     * Loads month totals from December of the previous calendar year through the current month.
+     * Loads month totals from the user's December 2025 phone-flash baseline through this month.
      * Android may not retain all older network buckets, so an unavailable result is preserved.
      */
-    fun getWifiUsageMonthHistorySinceLastDecember(): List<MonthlyWifiUsage> {
+    fun getWifiUsageMonthHistorySincePhoneFlash(): List<MonthlyWifiUsage> {
         val now = Calendar.getInstance()
         val firstMonth = Calendar.getInstance().apply {
             timeInMillis = now.timeInMillis
             set(Calendar.MONTH, Calendar.DECEMBER)
-            set(Calendar.YEAR, now.get(Calendar.YEAR) - 1)
+            set(Calendar.YEAR, PHONE_FLASH_HISTORY_YEAR)
             set(Calendar.DAY_OF_MONTH, 1)
             set(Calendar.HOUR_OF_DAY, 0)
             set(Calendar.MINUTE, 0)
@@ -113,13 +116,13 @@ class WifiUsageRepository(private val context: Context) {
         return result
     }
 
-    /** Returns a selected app/UID's monthly totals over the same retained-history window. */
-    fun getAppWifiUsageMonthHistorySinceLastDecember(packageKey: String): List<MonthlyWifiUsage> {
+    /** Returns a selected app/UID's monthly totals over the same phone-flash history window. */
+    fun getAppWifiUsageMonthHistorySincePhoneFlash(packageKey: String): List<MonthlyWifiUsage> {
         val now = Calendar.getInstance()
         val cursor = Calendar.getInstance().apply {
             timeInMillis = now.timeInMillis
             set(Calendar.MONTH, Calendar.DECEMBER)
-            set(Calendar.YEAR, now.get(Calendar.YEAR) - 1)
+            set(Calendar.YEAR, PHONE_FLASH_HISTORY_YEAR)
             set(Calendar.DAY_OF_MONTH, 1)
             set(Calendar.HOUR_OF_DAY, 0)
             set(Calendar.MINUTE, 0)

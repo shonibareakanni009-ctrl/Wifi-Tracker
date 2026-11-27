@@ -42,6 +42,15 @@
         android:theme="@style/Theme.WifiTracker"
         tools:targetApi="35">
 
+        <receiver
+            android:name=".networkusage.WifiNetworkUsageBootReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
         <service
             android:name=".networkusage.WifiNetworkUsageService"
             android:exported="false"

@@ -301,7 +301,7 @@ class WifiNetworkUsageService : Service() {
 
         private fun setTracking(context: Context, tracking: Boolean) {
             context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
-                .edit().putBoolean(PREF_TRACKING, tracking).apply()
+                .edit().putBoolean(PREF_TRACKING, tracking).commit()
         }
     }
 }

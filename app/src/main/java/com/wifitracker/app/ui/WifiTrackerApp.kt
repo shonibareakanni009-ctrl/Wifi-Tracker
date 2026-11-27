@@ -149,7 +149,7 @@ fun WifiTrackerApp(
         }
     }
 
-    // The week view is daily; the month view has selectable monthly totals back to last December.
+    // The week view is daily; month history starts from the December 2025 phone-flash baseline.
     LaunchedEffect(hasUsageAccess, isAppInForeground, selectedPeriod) {
         if (!hasUsageAccess || !isAppInForeground || selectedPeriod != UsagePeriod.MONTH) {
             monthlyUsage = emptyList()
@@ -157,7 +157,7 @@ fun WifiTrackerApp(
         }
         isLoadingMonthlyUsage = true
         monthlyUsage = try {
-            withContext(Dispatchers.IO) { repository.getWifiUsageMonthHistorySinceLastDecember() }
+            withContext(Dispatchers.IO) { repository.getWifiUsageMonthHistorySincePhoneFlash() }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
@@ -236,7 +236,7 @@ fun WifiTrackerApp(
                                         isLoadingMonthlyUsage = true
                                         try {
                                             monthlyUsage = withContext(Dispatchers.IO) {
-                                                repository.getWifiUsageMonthHistorySinceLastDecember()
+                                                repository.getWifiUsageMonthHistorySincePhoneFlash()
                                             }
                                         } finally {
                                             isLoadingMonthlyUsage = false
@@ -334,7 +334,7 @@ fun WifiTrackerApp(
                     }
                     item {
                         Text(
-                            text = "The chart covers last December through now. Each month depends on Android's retained network buckets; records the system has discarded cannot be recovered.",
+                            text = "History starts in December 2025, when this phone was flashed. Each month depends on Android's retained network buckets; records the system has discarded cannot be recovered.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

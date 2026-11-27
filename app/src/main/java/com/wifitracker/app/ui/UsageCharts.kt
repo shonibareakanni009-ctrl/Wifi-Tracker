@@ -349,7 +349,7 @@ internal fun AppUsageHistoryScreen(
         isLoadingMonthly = true
         try {
             monthlyUsage = withContext(Dispatchers.IO) {
-                repository.getAppWifiUsageMonthHistorySinceLastDecember(app.packageName)
+                repository.getAppWifiUsageMonthHistorySincePhoneFlash(app.packageName)
             }
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -403,7 +403,7 @@ internal fun AppUsageHistoryScreen(
             title = "Monthly app history"
         )
         Text(
-            "Swipe sideways and tap a month to view this app's Wi-Fi usage. Android only provides history it still retains; shared UIDs remain combined.",
+            "Swipe sideways and tap a month to view this app's Wi-Fi usage from December 2025 onward. Android only provides history it still retains; shared UIDs remain combined.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

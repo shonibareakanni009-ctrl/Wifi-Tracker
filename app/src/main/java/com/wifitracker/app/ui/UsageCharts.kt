@@ -23,15 +23,25 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.wifitracker.app.data.AppUsage
 import com.wifitracker.app.data.DailyWifiUsage
 import com.wifitracker.app.data.MonthlyWifiUsage
+import com.wifitracker.app.data.WifiUsageRepository
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -74,7 +84,7 @@ internal fun DailyWifiUsageChart(
             }
             if (chartValues.isEmpty()) {
                 Text(
-                    "Daily history is loading…",
+                    if (isLoading) "Daily history is loading…" else "Daily Wi-Fi history is unavailable. Check Usage Access and try again.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(vertical = 24.dp)
                 )
@@ -155,7 +165,8 @@ internal fun MonthlyWifiUsageChart(
     monthlyUsage: List<MonthlyWifiUsage>,
     selectedMonthStart: Long,
     isLoading: Boolean,
-    onSelectMonth: (Long) -> Unit
+    onSelectMonth: (Long) -> Unit,
+    title: String = "Monthly Wi-Fi history"
 ) {
     val maxBytes = monthlyUsage.filter { it.isAvailable }.maxOfOrNull { it.totalBytes } ?: 0L
 
@@ -169,7 +180,7 @@ internal fun MonthlyWifiUsageChart(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Monthly Wi-Fi history", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 if (isLoading) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
             }
             if (monthlyUsage.isEmpty()) {
@@ -309,12 +320,46 @@ private fun UsageShareBar(label: String, bytes: Long, totalBytes: Long, barColor
 @Composable
 internal fun AppUsageHistoryScreen(
     app: AppUsage,
-    dailyUsage: List<DailyWifiUsage>,
-    selectedDayStart: Long,
-    onSelectDay: (Long) -> Unit,
-    isLoading: Boolean,
+    initialDayStart: Long,
+    initialMonthStart: Long,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    val repository = remember(app.packageName) { WifiUsageRepository(context) }
+    var dailyUsage by remember(app.packageName) { mutableStateOf(emptyList<DailyWifiUsage>()) }
+    var monthlyUsage by remember(app.packageName) { mutableStateOf(emptyList<MonthlyWifiUsage>()) }
+    var selectedDayStart by remember(app.packageName) { mutableStateOf(initialDayStart) }
+    var selectedMonthStart by remember(app.packageName) { mutableStateOf(initialMonthStart) }
+    var isLoadingDaily by remember(app.packageName) { mutableStateOf(false) }
+    var isLoadingMonthly by remember(app.packageName) { mutableStateOf(false) }
+
+    LaunchedEffect(app.packageName) {
+        isLoadingDaily = true
+        try {
+            dailyUsage = withContext(Dispatchers.IO) { repository.getCurrentWeekWifiUsage() }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            dailyUsage = emptyList()
+        } finally {
+            isLoadingDaily = false
+        }
+    }
+    LaunchedEffect(app.packageName) {
+        isLoadingMonthly = true
+        try {
+            monthlyUsage = withContext(Dispatchers.IO) {
+                repository.getAppWifiUsageMonthHistorySinceLastDecember(app.packageName)
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            monthlyUsage = emptyList()
+        } finally {
+            isLoadingMonthly = false
+        }
+    }
+
     val selectedDay = dailyUsage.firstOrNull { it.dayStartMillis == selectedDayStart }
     val selectedRow = selectedDay?.report?.rows?.firstOrNull { it.packageName == app.packageName }
     val selectedBytes = selectedRow?.bytes ?: 0L
@@ -332,7 +377,7 @@ internal fun AppUsageHistoryScreen(
             iconPackageNames = app.iconPackageNames
         )
         Text(
-            text = "Wi-Fi data on ${formatDay(selectedDayStart)}",
+            text = "This week's Wi-Fi data on ${formatDay(selectedDayStart)}",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold
         )
@@ -345,13 +390,25 @@ internal fun AppUsageHistoryScreen(
         DailyWifiUsageChart(
             dailyUsage = dailyUsage,
             selectedDayStart = selectedDayStart,
-            isLoading = isLoading,
-            onSelectDay = onSelectDay,
+            isLoading = isLoadingDaily,
+            onSelectDay = { selectedDayStart = it },
             appPackageKey = app.packageName,
             title = "Daily Wi-Fi usage · this week"
         )
+        MonthlyWifiUsageChart(
+            monthlyUsage = monthlyUsage,
+            selectedMonthStart = selectedMonthStart,
+            isLoading = isLoadingMonthly,
+            onSelectMonth = { selectedMonthStart = it },
+            title = "Monthly app history"
+        )
         Text(
-            "Android reports usage by UID. Shared UIDs remain combined, and values are Wi-Fi data only.",
+            "Swipe sideways and tap a month to view this app's Wi-Fi usage. Android only provides history it still retains; shared UIDs remain combined.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            "Values are Wi-Fi data only. Per-app history may be unavailable if Android has discarded older network buckets.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

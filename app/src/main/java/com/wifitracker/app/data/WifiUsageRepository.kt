@@ -113,6 +113,31 @@ class WifiUsageRepository(private val context: Context) {
         return result
     }
 
+    /** Returns a selected app/UID's monthly totals over the same retained-history window. */
+    fun getAppWifiUsageMonthHistorySinceLastDecember(packageKey: String): List<MonthlyWifiUsage> {
+        val now = Calendar.getInstance()
+        val cursor = Calendar.getInstance().apply {
+            timeInMillis = now.timeInMillis
+            set(Calendar.MONTH, Calendar.DECEMBER)
+            set(Calendar.YEAR, now.get(Calendar.YEAR) - 1)
+            set(Calendar.DAY_OF_MONTH, 1)
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        val result = mutableListOf<MonthlyWifiUsage>()
+        while (cursor.timeInMillis <= now.timeInMillis) {
+            val start = cursor.timeInMillis
+            val next = (cursor.clone() as Calendar).apply { add(Calendar.MONTH, 1) }.timeInMillis
+            val report = getWifiUsageReport(start, minOf(next, now.timeInMillis))
+            val appBytes = report.rows.firstOrNull { it.packageName == packageKey }?.bytes ?: 0L
+            result += MonthlyWifiUsage(start, appBytes, report.isAvailable)
+            cursor.add(Calendar.MONTH, 1)
+        }
+        return result
+    }
+
     /** Returns Wi-Fi usage for an explicit interval, using the same reconciled device/UID totals. */
     fun getWifiUsageReport(startTimeMillis: Long, endTimeMillis: Long): WifiUsageReport {
         val start = startTimeMillis.coerceAtMost(endTimeMillis)

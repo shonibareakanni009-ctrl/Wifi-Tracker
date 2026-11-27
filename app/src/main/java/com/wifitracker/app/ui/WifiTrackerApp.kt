@@ -264,10 +264,8 @@ fun WifiTrackerApp(
         if (selectedApp != null) {
             AppUsageHistoryScreen(
                 app = selectedApp!!,
-                dailyUsage = dailyUsage,
-                selectedDayStart = selectedDayStart,
-                onSelectDay = { selectedDayStart = it },
-                isLoading = isLoadingDailyUsage,
+                initialDayStart = selectedDayStart,
+                initialMonthStart = selectedMonthStart,
                 modifier = Modifier.padding(padding)
             )
         } else if (showSettings) {

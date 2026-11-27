@@ -1,6 +1,5 @@
 package com.wifitracker.app.ui
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -12,8 +11,10 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -25,12 +26,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.wifitracker.app.data.AppUsage
 import com.wifitracker.app.data.DailyWifiUsage
+import com.wifitracker.app.data.MonthlyWifiUsage
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -150,64 +150,132 @@ internal fun DailyWifiUsageChart(
 }
 
 @Composable
-internal fun AppUsageDonut(rows: List<AppUsage>, totalBytes: Long) {
-    val scheme = MaterialTheme.colorScheme
-    val chartColors = listOf(
-        scheme.primary,
-        scheme.tertiary,
-        scheme.secondary,
-        scheme.error,
-        scheme.primaryContainer,
-        scheme.tertiaryContainer,
-        scheme.secondaryContainer,
-        scheme.inversePrimary
-    )
+internal fun MonthlyWifiUsageChart(
+    monthlyUsage: List<MonthlyWifiUsage>,
+    selectedMonthStart: Long,
+    isLoading: Boolean,
+    onSelectMonth: (Long) -> Unit
+) {
+    val maxBytes = monthlyUsage.filter { it.isAvailable }.maxOfOrNull { it.totalBytes } ?: 0L
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Monthly Wi-Fi history", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                if (isLoading) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+            }
+            if (monthlyUsage.isEmpty()) {
+                Text(
+                    if (isLoading) "Monthly history is loading…" else "Monthly Wi-Fi history is unavailable. Check Usage Access and refresh.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.Bottom
+                ) {
+                    monthlyUsage.asReversed().forEach { month ->
+                        val fraction = if (maxBytes > 0L && month.totalBytes > 0L) {
+                            (month.totalBytes.toDouble() / maxBytes.toDouble()).toFloat().coerceIn(0.04f, 1f)
+                        } else 0.025f
+                        Column(
+                            modifier = Modifier.width(58.dp).height(148.dp)
+                                .clickable(enabled = month.isAvailable) { onSelectMonth(month.monthStartMillis) },
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = if (month.isAvailable) formatBytesCompact(month.totalBytes) else "—",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1
+                            )
+                            Box(
+                                modifier = Modifier.weight(1f).fillMaxWidth(),
+                                contentAlignment = Alignment.BottomCenter
+                            ) {
+                                Box(
+                                    modifier = Modifier.fillMaxWidth(0.52f).fillMaxHeight(fraction)
+                                        .clip(RoundedCornerShape(topStart = 6.dp, topEnd = 6.dp))
+                                        .background(
+                                            if (month.monthStartMillis == selectedMonthStart)
+                                                MaterialTheme.colorScheme.primary
+                                            else MaterialTheme.colorScheme.secondaryContainer
+                                        )
+                                )
+                            }
+                            Text(
+                                text = SimpleDateFormat("MMM yy", Locale.getDefault()).format(Date(month.monthStartMillis)),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (month.monthStartMillis == selectedMonthStart)
+                                    MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontWeight = if (month.monthStartMillis == selectedMonthStart)
+                                    FontWeight.Bold else FontWeight.Normal,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+                val selected = monthlyUsage.firstOrNull { it.monthStartMillis == selectedMonthStart }
+                Text(
+                    text = if (selected?.isAvailable == true)
+                        "Selected: ${formatMonth(selectedMonthStart)} · ${formatBytes(selected.totalBytes)}"
+                    else "Android usage history is unavailable for ${formatMonth(selectedMonthStart)}.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+internal fun AppUsageBreakdown(rows: List<AppUsage>, totalBytes: Long) {
     val positiveRows = rows.filter { it.bytes > 0L }
-    val sumBytes = positiveRows.fold(0L) { total, row ->
+    val displayedRows = positiveRows.take(5).toMutableList()
+    val otherBytes = positiveRows.drop(5).fold(0L) { total, row ->
         if (Long.MAX_VALUE - total < row.bytes) Long.MAX_VALUE else total + row.bytes
     }
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text("Usage by app", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            Box(contentAlignment = Alignment.Center, modifier = Modifier.size(204.dp)) {
-                Canvas(modifier = Modifier.fillMaxSize()) {
-                    val strokeWidth = size.minDimension * 0.17f
-                    var startAngle = -90f
-                    if (sumBytes > 0L) {
-                        positiveRows.forEachIndexed { index, row ->
-                            val sweep = (row.bytes.toDouble() / sumBytes.toDouble() * 360.0).toFloat()
-                            drawArc(
-                                color = chartColors[index % chartColors.size],
-                                startAngle = startAngle,
-                                sweepAngle = sweep,
-                                useCenter = false,
-                                style = Stroke(width = strokeWidth)
-                            )
-                            startAngle += sweep
-                        }
-                    }
-                }
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        "SELECTED DAY",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(formatBytes(totalBytes), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                }
+            if (positiveRows.isEmpty()) {
+                Text("No app or system usage is available for this period.", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            Text(
-                "Each segment represents an app or system UID. The list below shows the exact byte totals.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center
+            displayedRows.forEach { row -> UsageShareBar(row.appName, row.bytes, totalBytes) }
+            if (otherBytes > 0L) UsageShareBar("Other apps / system", otherBytes, totalBytes)
+        }
+    }
+}
+
+@Composable
+private fun UsageShareBar(label: String, bytes: Long, totalBytes: Long) {
+    val fraction = if (totalBytes > 0L) (bytes.toDouble() / totalBytes.toDouble()).toFloat().coerceIn(0f, 1f) else 0f
+    val percent = if (totalBytes > 0L) (fraction * 100).toInt() else 0
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(label, modifier = Modifier.weight(1f), maxLines = 1, style = MaterialTheme.typography.bodyMedium)
+            Text("${formatBytes(bytes)} · $percent%", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+        }
+        Box(
+            modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            Box(
+                modifier = Modifier.fillMaxWidth(fraction).fillMaxHeight()
+                    .clip(RoundedCornerShape(4.dp)).background(MaterialTheme.colorScheme.primary)
             )
         }
     }
@@ -273,8 +341,19 @@ internal fun startOfTodayMillis(): Long = Calendar.getInstance().apply {
     set(Calendar.MILLISECOND, 0)
 }.timeInMillis
 
+internal fun startOfMonthMillis(): Long = Calendar.getInstance().apply {
+    set(Calendar.DAY_OF_MONTH, 1)
+    set(Calendar.HOUR_OF_DAY, 0)
+    set(Calendar.MINUTE, 0)
+    set(Calendar.SECOND, 0)
+    set(Calendar.MILLISECOND, 0)
+}.timeInMillis
+
 internal fun formatDay(timeMillis: Long): String =
     SimpleDateFormat("EEE, MMM d", Locale.getDefault()).format(Date(timeMillis))
+
+internal fun formatMonth(timeMillis: Long): String =
+    SimpleDateFormat("MMMM yyyy", Locale.getDefault()).format(Date(timeMillis))
 
 private fun formatBytesCompact(bytes: Long): String = when {
     bytes >= 1024L * 1024L * 1024L -> "%.1fG".format(bytes / (1024.0 * 1024 * 1024))

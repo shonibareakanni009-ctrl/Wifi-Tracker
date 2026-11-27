@@ -41,6 +41,12 @@ data class DailyWifiUsage(
     val report: WifiUsageReport
 )
 
+data class MonthlyWifiUsage(
+    val monthStartMillis: Long,
+    val totalBytes: Long,
+    val isAvailable: Boolean
+)
+
 data class WifiSpeedSample(
     val downloadBytesPerSecond: Long,
     val uploadBytesPerSecond: Long,
@@ -63,6 +69,48 @@ class WifiUsageRepository(private val context: Context) {
     fun getWifiUsageReport(period: UsagePeriod): WifiUsageReport {
         val (start, end) = getTimeRange(period)
         return getWifiUsageReport(start, end)
+    }
+
+    /** Returns a report for one calendar month, using local calendar boundaries. */
+    fun getWifiUsageReportForMonth(monthStartMillis: Long): WifiUsageReport {
+        val start = Calendar.getInstance().apply {
+            timeInMillis = monthStartMillis
+            set(Calendar.DAY_OF_MONTH, 1)
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        val end = (start.clone() as Calendar).apply { add(Calendar.MONTH, 1) }
+        return getWifiUsageReport(start.timeInMillis, minOf(end.timeInMillis, System.currentTimeMillis()))
+    }
+
+    /**
+     * Loads month totals from December of the previous calendar year through the current month.
+     * Android may not retain all older network buckets, so an unavailable result is preserved.
+     */
+    fun getWifiUsageMonthHistorySinceLastDecember(): List<MonthlyWifiUsage> {
+        val now = Calendar.getInstance()
+        val firstMonth = Calendar.getInstance().apply {
+            timeInMillis = now.timeInMillis
+            set(Calendar.MONTH, Calendar.DECEMBER)
+            set(Calendar.YEAR, now.get(Calendar.YEAR) - 1)
+            set(Calendar.DAY_OF_MONTH, 1)
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        val result = mutableListOf<MonthlyWifiUsage>()
+        val cursor = firstMonth.clone() as Calendar
+        while (cursor.timeInMillis <= now.timeInMillis) {
+            val start = cursor.timeInMillis
+            val next = (cursor.clone() as Calendar).apply { add(Calendar.MONTH, 1) }.timeInMillis
+            val report = getWifiUsageReport(start, minOf(next, now.timeInMillis))
+            result += MonthlyWifiUsage(start, report.totalBytes, report.isAvailable)
+            cursor.add(Calendar.MONTH, 1)
+        }
+        return result
     }
 
     /** Returns Wi-Fi usage for an explicit interval, using the same reconciled device/UID totals. */

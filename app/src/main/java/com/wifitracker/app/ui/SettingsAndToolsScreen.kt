@@ -456,7 +456,7 @@ private fun NetworkUsageTrackingCard(
                 )
             }
             Text(
-                "Tracking is optional and local-only. Per-network totals start with the first valid sample—Android cannot provide older per-Wi-Fi history—and grow only while the foreground tracker is on. Sampled RX/TX totals are approximate and may have gaps; the ongoing notification has a Stop action.",
+                "Tracking is optional and local-only. After you tap Start, the foreground service keeps sampling while you use other apps, with an ongoing notification and Stop action. It does not auto-start after a device reboot. Per-network totals start with the first valid sample—Android cannot provide older per-Wi-Fi history—and sampled RX/TX totals are approximate and may have gaps.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

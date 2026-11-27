@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
 import com.wifitracker.app.data.AppUsage
 import com.wifitracker.app.data.DailyWifiUsage
+import com.wifitracker.app.data.MonthlyWifiUsage
 import com.wifitracker.app.data.UsagePeriod
 import com.wifitracker.app.data.WifiSpeedSample
 import com.wifitracker.app.data.WifiUsageRepository
@@ -65,8 +66,11 @@ fun WifiTrackerApp(
     var showSettings by remember { mutableStateOf(false) }
     var selectedApp by remember { mutableStateOf<AppUsage?>(null) }
     var selectedDayStart by remember { mutableStateOf(startOfTodayMillis()) }
+    var selectedMonthStart by remember { mutableStateOf(startOfMonthMillis()) }
     var dailyUsage by remember { mutableStateOf(emptyList<DailyWifiUsage>()) }
+    var monthlyUsage by remember { mutableStateOf(emptyList<MonthlyWifiUsage>()) }
     var isLoadingDailyUsage by remember { mutableStateOf(false) }
+    var isLoadingMonthlyUsage by remember { mutableStateOf(false) }
     var speedSample by remember {
         mutableStateOf(
             WifiSpeedSample(
@@ -80,18 +84,27 @@ fun WifiTrackerApp(
     var currentSsid by remember { mutableStateOf("Not connected") }
     var signalStrength by remember { mutableStateOf(0) }
     var usageReport by remember { mutableStateOf<WifiUsageReport?>(null) }
+    var usageReportPeriod by remember { mutableStateOf<UsagePeriod?>(null) }
+    var usageReportMonthStart by remember { mutableStateOf<Long?>(null) }
     var isRefreshing by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
     val selectedDayReport = dailyUsage
         .firstOrNull { it.dayStartMillis == selectedDayStart }
         ?.report
+    val displayedUsageReport = usageReport.takeIf {
+        usageReportPeriod == selectedPeriod &&
+            (selectedPeriod != UsagePeriod.MONTH || usageReportMonthStart == selectedMonthStart)
+    }
 
-    suspend fun refreshUsage(period: UsagePeriod) {
+    suspend fun refreshUsage(period: UsagePeriod, monthStartMillis: Long = selectedMonthStart) {
         isRefreshing = true
         try {
             usageReport = withContext(Dispatchers.IO) {
-                repository.getWifiUsageReport(period)
+                if (period == UsagePeriod.MONTH) repository.getWifiUsageReportForMonth(monthStartMillis)
+                else repository.getWifiUsageReport(period)
             }
+            usageReportPeriod = period
+            usageReportMonthStart = if (period == UsagePeriod.MONTH) monthStartMillis else null
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
@@ -101,6 +114,8 @@ fun WifiTrackerApp(
                 isAvailable = false,
                 note = "Could not load Wi-Fi usage. Please refresh and try again."
             )
+            usageReportPeriod = period
+            usageReportMonthStart = if (period == UsagePeriod.MONTH) monthStartMillis else null
         } finally {
             isRefreshing = false
         }
@@ -134,8 +149,26 @@ fun WifiTrackerApp(
         }
     }
 
-    // Refresh totals on return to the app and once a minute while visible. No background polling.
+    // The week view is daily; the month view has selectable monthly totals back to last December.
     LaunchedEffect(hasUsageAccess, isAppInForeground, selectedPeriod) {
+        if (!hasUsageAccess || !isAppInForeground || selectedPeriod != UsagePeriod.MONTH) {
+            monthlyUsage = emptyList()
+            return@LaunchedEffect
+        }
+        isLoadingMonthlyUsage = true
+        monthlyUsage = try {
+            withContext(Dispatchers.IO) { repository.getWifiUsageMonthHistorySinceLastDecember() }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            emptyList()
+        } finally {
+            isLoadingMonthlyUsage = false
+        }
+    }
+
+    // Refresh totals on return to the app and once a minute while visible. No background polling.
+    LaunchedEffect(hasUsageAccess, isAppInForeground, selectedPeriod, selectedMonthStart) {
         if (!hasUsageAccess) {
             usageReport = null
             isRefreshing = false
@@ -143,22 +176,24 @@ fun WifiTrackerApp(
         }
         if (!isAppInForeground) return@LaunchedEffect
         while (true) {
-            isLoadingDailyUsage = true
-            try {
-                dailyUsage = withContext(Dispatchers.IO) {
-                    repository.getCurrentWeekWifiUsage()
+            if (selectedPeriod != UsagePeriod.MONTH) {
+                isLoadingDailyUsage = true
+                try {
+                    dailyUsage = withContext(Dispatchers.IO) {
+                        repository.getCurrentWeekWifiUsage()
+                    }
+                    if (dailyUsage.none { it.dayStartMillis == selectedDayStart }) {
+                        selectedDayStart = startOfTodayMillis()
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    dailyUsage = emptyList()
+                } finally {
+                    isLoadingDailyUsage = false
                 }
-                if (dailyUsage.none { it.dayStartMillis == selectedDayStart }) {
-                    selectedDayStart = startOfTodayMillis()
-                }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
-                dailyUsage = emptyList()
-            } finally {
-                isLoadingDailyUsage = false
             }
-            refreshUsage(selectedPeriod)
+            refreshUsage(selectedPeriod, selectedMonthStart)
             delay(60_000)
         }
     }
@@ -196,14 +231,25 @@ fun WifiTrackerApp(
                         IconButton(enabled = !isRefreshing, onClick = {
                             if (hasUsageAccess) {
                                 coroutineScope.launch {
-                                    refreshUsage(selectedPeriod)
-                                    isLoadingDailyUsage = true
-                                    try {
-                                        dailyUsage = withContext(Dispatchers.IO) {
-                                            repository.getCurrentWeekWifiUsage()
+                                    refreshUsage(selectedPeriod, selectedMonthStart)
+                                    if (selectedPeriod == UsagePeriod.MONTH) {
+                                        isLoadingMonthlyUsage = true
+                                        try {
+                                            monthlyUsage = withContext(Dispatchers.IO) {
+                                                repository.getWifiUsageMonthHistorySinceLastDecember()
+                                            }
+                                        } finally {
+                                            isLoadingMonthlyUsage = false
                                         }
-                                    } finally {
-                                        isLoadingDailyUsage = false
+                                    } else {
+                                        isLoadingDailyUsage = true
+                                        try {
+                                            dailyUsage = withContext(Dispatchers.IO) {
+                                                repository.getCurrentWeekWifiUsage()
+                                            }
+                                        } finally {
+                                            isLoadingDailyUsage = false
+                                        }
                                     }
                                 }
                             }
@@ -273,67 +319,122 @@ fun WifiTrackerApp(
                 item {
                     TotalUsageCard(
                         period = selectedPeriod,
-                        report = usageReport,
-                        isLoading = isRefreshing
+                        report = displayedUsageReport,
+                        isLoading = isRefreshing,
+                        monthStartMillis = selectedMonthStart
                     )
                 }
 
-                item {
-                    DailyWifiUsageChart(
-                        dailyUsage = dailyUsage,
-                        selectedDayStart = selectedDayStart,
-                        isLoading = isLoadingDailyUsage,
-                        onSelectDay = { selectedDayStart = it }
-                    )
-                }
-
-                item {
-                    Text(
-                        text = "Wi-Fi usage on ${formatDay(selectedDayStart)}",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.padding(top = 4.dp)
-                    )
-                }
-
-                if (selectedDayReport == null || !selectedDayReport.isAvailable) {
+                if (selectedPeriod == UsagePeriod.MONTH) {
                     item {
-                        Text(
-                            text = if (isLoadingDailyUsage) "Loading daily Wi-Fi history…" else
-                                selectedDayReport?.note ?: "Daily usage is not available yet.",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(vertical = 12.dp)
-                        )
-                    }
-                } else if (selectedDayReport.rows.isEmpty()) {
-                    item {
-                        Text(
-                            text = selectedDayReport.note ?: "Android reported no Wi-Fi usage on this date.",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(vertical = 12.dp)
-                        )
-                    }
-                } else {
-                    item {
-                        AppUsageDonut(
-                            rows = selectedDayReport.rows,
-                            totalBytes = selectedDayReport.totalBytes
+                        MonthlyWifiUsageChart(
+                            monthlyUsage = monthlyUsage,
+                            selectedMonthStart = selectedMonthStart,
+                            isLoading = isLoadingMonthlyUsage,
+                            onSelectMonth = { selectedMonthStart = it }
                         )
                     }
                     item {
                         Text(
-                            text = "Apps and system usage · Wi-Fi only · tap an app for its weekly history",
+                            text = "The chart covers last December through now. Each month depends on Android's retained network buckets; records the system has discarded cannot be recovered.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    itemsIndexed(selectedDayReport.rows, key = { index, app -> "${app.packageName}-$index" }) { _, app ->
-                        AppUsageRow(
-                            appName = app.appName,
-                            bytes = app.bytes,
-                            iconPackageNames = app.iconPackageNames,
-                            onClick = { selectedApp = app }
+                    item {
+                        Text(
+                            text = "Apps and system usage · Wi-Fi only · ${formatMonth(selectedMonthStart)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                    }
+                    val monthReport = displayedUsageReport
+                    if (monthReport == null || !monthReport.isAvailable) {
+                        item {
+                            Text(
+                                text = monthReport?.note ?: "Loading monthly Wi-Fi history…",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(vertical = 12.dp)
+                            )
+                        }
+                    } else {
+                        if (monthReport.rows.isNotEmpty()) {
+                            item { AppUsageBreakdown(monthReport.rows, monthReport.totalBytes) }
+                            itemsIndexed(monthReport.rows, key = { index, app -> "month-${app.packageName}-$index" }) { _, app ->
+                                AppUsageRow(
+                                    appName = app.appName,
+                                    bytes = app.bytes,
+                                    iconPackageNames = app.iconPackageNames,
+                                    onClick = { selectedApp = app }
+                                )
+                            }
+                        } else {
+                            item {
+                                Text(
+                                    monthReport.note ?: "Android reported no Wi-Fi usage for this month.",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    item {
+                        DailyWifiUsageChart(
+                            dailyUsage = dailyUsage,
+                            selectedDayStart = selectedDayStart,
+                            isLoading = isLoadingDailyUsage,
+                            onSelectDay = { selectedDayStart = it },
+                            title = "Daily usage · this week"
+                        )
+                    }
+                    item {
+                        Text(
+                            text = "Wi-Fi usage on ${formatDay(selectedDayStart)}",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
+
+                    if (selectedDayReport == null || !selectedDayReport.isAvailable) {
+                        item {
+                            Text(
+                                text = if (isLoadingDailyUsage) "Loading daily Wi-Fi history…" else
+                                    selectedDayReport?.note ?: "Daily usage is not available yet.",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(vertical = 12.dp)
+                            )
+                        }
+                    } else if (selectedDayReport.rows.isEmpty()) {
+                        item {
+                            Text(
+                                text = selectedDayReport.note ?: "Android reported no Wi-Fi usage on this date.",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(vertical = 12.dp)
+                            )
+                        }
+                    } else {
+                        item {
+                            AppUsageBreakdown(
+                                rows = selectedDayReport.rows,
+                                totalBytes = selectedDayReport.totalBytes
+                            )
+                        }
+                        item {
+                            Text(
+                                text = "Apps and system usage · Wi-Fi only · tap an app for its weekly history",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        itemsIndexed(selectedDayReport.rows, key = { index, app -> "${app.packageName}-$index" }) { _, app ->
+                            AppUsageRow(
+                                appName = app.appName,
+                                bytes = app.bytes,
+                                iconPackageNames = app.iconPackageNames,
+                                onClick = { selectedApp = app }
+                            )
+                        }
                     }
                 }
 
@@ -496,7 +597,8 @@ fun PeriodSelector(
 fun TotalUsageCard(
     period: UsagePeriod,
     report: WifiUsageReport?,
-    isLoading: Boolean
+    isLoading: Boolean,
+    monthStartMillis: Long = startOfMonthMillis()
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -512,7 +614,7 @@ fun TotalUsageCard(
                 text = when (period) {
                     UsagePeriod.TODAY -> "Today's Wi-Fi Usage"
                     UsagePeriod.WEEK -> "This Week's Wi-Fi Usage"
-                    UsagePeriod.MONTH -> "This Month's Wi-Fi Usage"
+                    UsagePeriod.MONTH -> "${formatMonth(monthStartMillis)} Wi-Fi Usage"
                 },
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant

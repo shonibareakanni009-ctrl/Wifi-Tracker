@@ -26,6 +26,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.wifitracker.app.data.AppUsage
@@ -244,6 +245,17 @@ internal fun MonthlyWifiUsageChart(
 
 @Composable
 internal fun AppUsageBreakdown(rows: List<AppUsage>, totalBytes: Long) {
+    val scheme = MaterialTheme.colorScheme
+    val chartColors = listOf(
+        scheme.primary,
+        scheme.tertiary,
+        scheme.secondary,
+        scheme.error,
+        scheme.primaryContainer,
+        scheme.tertiaryContainer,
+        scheme.secondaryContainer,
+        scheme.inversePrimary
+    )
     val positiveRows = rows.filter { it.bytes > 0L }
     val displayedRows = positiveRows.take(5).toMutableList()
     val otherBytes = positiveRows.drop(5).fold(0L) { total, row ->
@@ -259,19 +271,27 @@ internal fun AppUsageBreakdown(rows: List<AppUsage>, totalBytes: Long) {
             if (positiveRows.isEmpty()) {
                 Text("No app or system usage is available for this period.", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            displayedRows.forEach { row -> UsageShareBar(row.appName, row.bytes, totalBytes) }
-            if (otherBytes > 0L) UsageShareBar("Other apps / system", otherBytes, totalBytes)
+            displayedRows.forEachIndexed { index, row ->
+                UsageShareBar(row.appName, row.bytes, totalBytes, chartColors[index % chartColors.size])
+            }
+            if (otherBytes > 0L) UsageShareBar("Other apps / system", otherBytes, totalBytes, scheme.outline)
         }
     }
 }
 
 @Composable
-private fun UsageShareBar(label: String, bytes: Long, totalBytes: Long) {
+private fun UsageShareBar(label: String, bytes: Long, totalBytes: Long, barColor: Color) {
     val fraction = if (totalBytes > 0L) (bytes.toDouble() / totalBytes.toDouble()).toFloat().coerceIn(0f, 1f) else 0f
     val percent = if (totalBytes > 0L) (fraction * 100).toInt() else 0
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(label, modifier = Modifier.weight(1f), maxLines = 1, style = MaterialTheme.typography.bodyMedium)
+            Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier.size(10.dp).clip(RoundedCornerShape(3.dp)).background(barColor)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(label, maxLines = 1, style = MaterialTheme.typography.bodyMedium)
+            }
             Text("${formatBytes(bytes)} · $percent%", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
         }
         Box(
@@ -280,7 +300,7 @@ private fun UsageShareBar(label: String, bytes: Long, totalBytes: Long) {
         ) {
             Box(
                 modifier = Modifier.fillMaxWidth(fraction).fillMaxHeight()
-                    .clip(RoundedCornerShape(4.dp)).background(MaterialTheme.colorScheme.primary)
+                    .clip(RoundedCornerShape(4.dp)).background(barColor)
             )
         }
     }
